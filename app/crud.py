@@ -17,7 +17,7 @@ def create_todo(db: Session, todo: schemas.ToDoCreate):
 def update_todo(db: Session, todo_id: int, todo: schemas.ToDoUpdate):
     db_todo = get_todo(db, todo_id)
     if db_todo:
-        update_data = todo.dict(exclude_unset=True)
+        update_data = todo.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(db_todo, key, value)
         db.commit()
