@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import os
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -18,6 +19,10 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 from app.models import Base
 target_metadata = Base.metadata
+
+# Set the database URL from environment variable if it exists
+database_url = os.getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url"))
+config.set_main_option("sqlalchemy.url", database_url)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
