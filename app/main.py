@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from datetime import date, datetime
 from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.routing import APIRoute
 
 from . import crud, models, schemas
 from .database import SessionLocal, engine
@@ -46,6 +47,11 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=86400,  # Cache CORS preflight requests for 24 hours
 )
+
+# Handle OPTIONS requests for CORS preflight
+@app.options("/{path:path}")
+async def options_handler(request: Request):
+    return Response(status_code=204)
 
 # Dependency
 def get_db():
