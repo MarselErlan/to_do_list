@@ -14,25 +14,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS configuration
-origins = [
-    # Production frontends
-    "https://v0-recreate-ui-from-screenshot-q3ulxx94b.vercel.app",
-    "https://v0-recreate-ui-from-screenshot-f3s08hb7x.vercel.app",
-    # Local development
-    "http://localhost",
-    "http://localhost:3000",
-    "http://localhost:8080",
-    # Railway domains
-    "https://*.railway.app",
-    "https://*.up.railway.app",
-]
-
+# Add CORS middleware - THIS IS REQUIRED FOR YOUR FRONTEND
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # In production, use your specific domain
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
