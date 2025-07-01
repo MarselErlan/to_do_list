@@ -54,68 +54,62 @@ def get_db():
     finally:
         db.close()
 
-@app.post("/todos/", response_model=schemas.ToDo)
-def create_todo_endpoint(todo: schemas.ToDoCreate, db: Session = Depends(get_db)):
+@app.post("/todos/", response_model=schemas.Todo)
+def create_todo_endpoint(todo: schemas.TodoCreate, db: Session = Depends(get_db)):
     return crud.create_todo(db=db, todo=todo)
 
-@app.get("/todos/", response_model=List[schemas.ToDo])
+@app.get("/todos/", response_model=List[schemas.Todo])
 def read_todos_endpoint(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     todos = crud.get_todos(db, skip=skip, limit=limit)
     return todos
 
 # Time Management Endpoints
 
-@app.get("/todos/today", response_model=List[schemas.ToDo])
+@app.get("/todos/today", response_model=List[schemas.Todo])
 def get_todos_today_endpoint(db: Session = Depends(get_db)):
-    """Get todos due today"""
-    return crud.get_todos_for_today(db)
+    return crud.get_todos_today(db)
 
-@app.get("/todos/week", response_model=List[schemas.ToDo])
-def get_todos_week_endpoint(db: Session = Depends(get_db)):
-    """Get todos due this week"""
+@app.get("/todos/week", response_model=List[schemas.Todo])
+def get_todos_for_week_endpoint(db: Session = Depends(get_db)):
     return crud.get_todos_for_week(db)
 
-@app.get("/todos/month", response_model=List[schemas.ToDo])
-def get_todos_month_endpoint(db: Session = Depends(get_db)):
-    """Get todos due this month"""
+@app.get("/todos/month", response_model=List[schemas.Todo])
+def get_todos_for_month_endpoint(db: Session = Depends(get_db)):
     return crud.get_todos_for_month(db)
 
-@app.get("/todos/year", response_model=List[schemas.ToDo])
-def get_todos_year_endpoint(db: Session = Depends(get_db)):
-    """Get todos due this year"""
+@app.get("/todos/year", response_model=List[schemas.Todo])
+def get_todos_for_year_endpoint(db: Session = Depends(get_db)):
     return crud.get_todos_for_year(db)
 
-@app.get("/todos/overdue", response_model=List[schemas.ToDo])
+@app.get("/todos/overdue", response_model=List[schemas.Todo])
 def get_overdue_todos_endpoint(db: Session = Depends(get_db)):
-    """Get overdue todos (past due date and not completed)"""
     return crud.get_overdue_todos(db)
 
-@app.get("/todos/range", response_model=List[schemas.ToDo])
+@app.get("/todos/range", response_model=List[schemas.Todo])
 def get_todos_by_date_range_endpoint(
-    start_date: date = Query(..., description="Start date for filtering"),
-    end_date: date = Query(..., description="End date for filtering"),
-    db: Session = Depends(get_db)
+    start_date: date, end_date: date, db: Session = Depends(get_db)
 ):
-    """Get todos within a specific date range"""
     return crud.get_todos_by_date_range(db, start_date, end_date)
 
-@app.get("/todos/{todo_id}", response_model=schemas.ToDo)
+@app.get("/todos/{todo_id}", response_model=schemas.Todo)
 def read_todo_endpoint(todo_id: int, db: Session = Depends(get_db)):
     db_todo = crud.get_todo(db, todo_id=todo_id)
     if db_todo is None:
-        raise HTTPException(status_code=404, detail="ToDo not found")
+        raise HTTPException(status_code=404, detail="Todo not found")
     return db_todo
 
-@app.put("/todos/{todo_id}", response_model=schemas.ToDo)
-def update_todo_endpoint(todo_id: int, todo: schemas.ToDoUpdate, db: Session = Depends(get_db)):
+@app.put("/todos/{todo_id}", response_model=schemas.Todo)
+def update_todo_endpoint(
+    todo_id: int, todo: schemas.TodoUpdate, db: Session = Depends(get_db)
+):
     db_todo = crud.update_todo(db, todo_id=todo_id, todo=todo)
     if db_todo is None:
-        raise HTTPException(status_code=404, detail="ToDo not found")
+        raise HTTPException(status_code=404, detail="Todo not found")
     return db_todo
 
-@app.delete("/todos/{todo_id}", response_model=schemas.ToDo)
+@app.delete("/todos/{todo_id}", response_model=schemas.Todo)
 def delete_todo_endpoint(todo_id: int, db: Session = Depends(get_db)):
     db_todo = crud.delete_todo(db, todo_id=todo_id)
     if db_todo is None:
-        raise HTTPException(status_code=404, detail="ToDo not found")
+        raise HTTPException(status_code=404, detail="Todo not found")
     return db_todo 
