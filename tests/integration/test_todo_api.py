@@ -1,12 +1,12 @@
 from fastapi.testclient import TestClient
 from app import schemas
 
-def test_create_and_read_todo(client: TestClient):
+def test_create_and_read_todo(authenticated_client: TestClient):
     # 1. Arrange: Define the to-do item data
     todo_data = {"title": "Integration Test Todo", "description": "This is a test"}
 
     # 2. Act: Create a to-do item
-    response = client.post("/todos/", json=todo_data)
+    response = authenticated_client.post("/todos/", json=todo_data)
 
     # 3. Assert: Check the creation response
     assert response.status_code == 200
@@ -18,7 +18,7 @@ def test_create_and_read_todo(client: TestClient):
     todo_id = created_todo["id"]
 
     # 4. Act: Retrieve the to-do item
-    response = client.get(f"/todos/{todo_id}")
+    response = authenticated_client.get(f"/todos/{todo_id}")
 
     # 5. Assert: Check the retrieval response
     assert response.status_code == 200
@@ -27,16 +27,16 @@ def test_create_and_read_todo(client: TestClient):
     assert retrieved_todo["id"] == todo_id
 
 
-def test_update_todo(client: TestClient):
+def test_update_todo(authenticated_client: TestClient):
     # Arrange: Create a to-do to update
     initial_data = {"title": "To be updated", "description": "Initial description"}
-    response = client.post("/todos/", json=initial_data)
+    response = authenticated_client.post("/todos/", json=initial_data)
     assert response.status_code == 200
     todo_id = response.json()["id"]
 
     # Act: Update the to-do
     updated_data = {"title": "Updated Title", "description": "Updated Description", "done": True}
-    response = client.put(f"/todos/{todo_id}", json=updated_data)
+    response = authenticated_client.put(f"/todos/{todo_id}", json=updated_data)
 
     # Assert: Check the update response
     assert response.status_code == 200
@@ -46,25 +46,25 @@ def test_update_todo(client: TestClient):
     assert updated_todo["done"] is True
 
     # Verify the update was persisted
-    response = client.get(f"/todos/{todo_id}")
+    response = authenticated_client.get(f"/todos/{todo_id}")
     assert response.status_code == 200
     assert response.json()["title"] == updated_data["title"]
 
 
-def test_delete_todo(client: TestClient):
+def test_delete_todo(authenticated_client: TestClient):
     # Arrange: Create a to-do to delete
     initial_data = {"title": "To be deleted", "description": "Delete me"}
-    response = client.post("/todos/", json=initial_data)
+    response = authenticated_client.post("/todos/", json=initial_data)
     assert response.status_code == 200
     todo_id = response.json()["id"]
 
     # Act: Delete the to-do
-    response = client.delete(f"/todos/{todo_id}")
+    response = authenticated_client.delete(f"/todos/{todo_id}")
 
     # Assert: Check the delete response
     assert response.status_code == 200
     assert response.json()["id"] == todo_id
 
     # Verify the to-do was deleted
-    response = client.get(f"/todos/{todo_id}")
+    response = authenticated_client.get(f"/todos/{todo_id}")
     assert response.status_code == 404 

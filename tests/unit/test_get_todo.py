@@ -27,17 +27,19 @@ def db_session():
         Base.metadata.drop_all(bind=engine)
 
 def test_get_todo(db: Session):
-    # First, create a todo
+    # First, create a user and a todo
+    user_in = schemas.UserCreate(username="testuser", password="testpassword")
+    db_user = crud.create_user(db=db, user=user_in)
     todo_in = schemas.TodoCreate(
-        title="Get Me", 
+        title="Get Me",
         description="A todo to be retrieved",
         due_date=datetime.utcnow().date()
     )
-    db_todo = crud.create_todo(db=db, todo=todo_in)
-    todo_id = db_todo.id
-
+    db_todo = crud.create_todo(db=db, todo=todo_in, owner_id=db_user.id)
+    
     # Now, retrieve it
-    retrieved_todo = crud.get_todo(db=db, todo_id=todo_id)
+    retrieved_todo = crud.get_todo(db=db, todo_id=db_todo.id)
     assert retrieved_todo is not None
-    assert retrieved_todo.id == todo_id
-    assert retrieved_todo.title == todo_in.title 
+    assert retrieved_todo.id == db_todo.id
+    assert retrieved_todo.title == "Get Me"
+    assert retrieved_todo.owner_id == db_user.id 

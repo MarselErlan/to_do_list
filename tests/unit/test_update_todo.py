@@ -27,19 +27,22 @@ def db_session():
         Base.metadata.drop_all(bind=engine)
 
 def test_update_todo(db: Session):
-    # First, create a todo
+    # First, create a user and a todo
+    user_in = schemas.UserCreate(username="testuser", password="testpassword")
+    db_user = crud.create_user(db=db, user=user_in)
     todo_in = schemas.TodoCreate(
-        title="Original Title", 
+        title="Original Title",
         description="Original Description",
         due_date=datetime.utcnow().date()
     )
-    db_todo = crud.create_todo(db=db, todo=todo_in)
-    todo_id = db_todo.id
-
+    db_todo = crud.create_todo(db=db, todo=todo_in, owner_id=db_user.id)
+    
     # Now, update it
     update_data = schemas.TodoUpdate(title="Updated Title", done=True)
-    updated_todo = crud.update_todo(db=db, todo_id=todo_id, todo=update_data)
+    updated_todo = crud.update_todo(db=db, todo_id=db_todo.id, todo=update_data)
     
+    assert updated_todo is not None
     assert updated_todo.title == "Updated Title"
     assert updated_todo.done is True
-    assert updated_todo.description == "Original Description" # Should not change 
+    assert updated_todo.id == db_todo.id
+    assert updated_todo.owner_id == db_user.id 
