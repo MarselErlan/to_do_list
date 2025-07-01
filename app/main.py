@@ -1,8 +1,9 @@
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import date, datetime
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import crud, models, schemas
 from .database import SessionLocal, engine
@@ -14,6 +15,21 @@ app = FastAPI(
     description="A simple todo list API built with FastAPI",
     version="1.0.0"
 )
+
+# Custom middleware to handle OPTIONS requests
+class OptionsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS":
+            response = Response(status_code=204)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Max-Age"] = "86400"
+            return response
+        return await call_next(request)
+
+# Add OPTIONS middleware first
+app.add_middleware(OptionsMiddleware)
 
 # Add CORS middleware - THIS IS REQUIRED FOR YOUR FRONTEND
 app.add_middleware(
