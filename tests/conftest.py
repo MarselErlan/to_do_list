@@ -20,7 +20,7 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 @pytest.fixture(scope="session")
 def live_api_url():
     """Get the live API URL from environment or use default Railway URL"""
-    return os.getenv("LIVE_API_URL", "https://web-production-56fee.up.railway.app")
+    return os.getenv("LIVE_API_URL", "https://web-production-56fee.up.railway.app/")
 
 @pytest.fixture(scope="session")
 def frontend_url():
