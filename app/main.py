@@ -36,13 +36,21 @@ class OptionsMiddleware(BaseHTTPMiddleware):
 # Add OPTIONS middleware first
 app.add_middleware(OptionsMiddleware)
 
-# Add CORS middleware with permissive settings
+# Add CORS middleware with specific origins
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "https://marsel-to-do-list.vercel.app",
+    "https://web-production-56fee.up.railway.app" # Your backend's own URL
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Handle OPTIONS requests for CORS preflight
