@@ -107,6 +107,51 @@ class TestAPISanity:
         final_get = client.get(f"/todos/{todo_id}")
         assert final_get.status_code == 404
 
+    def test_time_management_endpoints_sanity(self, client: TestClient):
+        """Sanity: Verify time management endpoints are accessible"""
+        from datetime import date
+        
+        # Test all time management endpoints exist and return 200
+        endpoints = [
+            "/todos/today",
+            "/todos/week", 
+            "/todos/month",
+            "/todos/year",
+            "/todos/overdue"
+        ]
+        
+        for endpoint in endpoints:
+            response = client.get(endpoint)
+            assert response.status_code == 200
+            assert isinstance(response.json(), list)
+        
+        # Test date range endpoint
+        today = date.today()
+        range_response = client.get(f"/todos/range?start_date={today}&end_date={today}")
+        assert range_response.status_code == 200
+        assert isinstance(range_response.json(), list)
+
+    def test_create_todo_with_time_fields_sanity(self, client: TestClient):
+        """Sanity: Verify we can create todos with time fields"""
+        from datetime import date
+        
+        todo_with_time = {
+            "title": "Sanity Time Todo",
+            "description": "Testing time fields",
+            "start_time": "2024-12-25T09:00:00",
+            "end_time": "2024-12-25T10:30:00",
+            "due_date": date.today().isoformat()
+        }
+        
+        response = client.post("/todos/", json=todo_with_time)
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["title"] == "Sanity Time Todo"
+        assert data["start_time"] == "2024-12-25T09:00:00"
+        assert data["end_time"] == "2024-12-25T10:30:00"
+        assert data["due_date"] == date.today().isoformat()
+
 @pytest.mark.sanity
 @pytest.mark.live
 class TestLiveAPISanity:
@@ -140,5 +185,18 @@ class TestLiveAPISanity:
             headers = response.headers
             assert "access-control-allow-origin" in headers
             
+        except requests.RequestException as e:
+            pytest.skip(f"Live API not accessible: {e}")
+
+    def test_live_time_management_endpoints(self, live_api_url):
+        """Sanity: Verify live time management endpoints work"""
+        try:
+            endpoints = ["/todos/today", "/todos/week", "/todos/month", "/todos/year", "/todos/overdue"]
+            
+            for endpoint in endpoints:
+                response = requests.get(f"{live_api_url}{endpoint}", timeout=10)
+                assert response.status_code == 200
+                assert isinstance(response.json(), list)
+                
         except requests.RequestException as e:
             pytest.skip(f"Live API not accessible: {e}") 
