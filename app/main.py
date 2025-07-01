@@ -32,20 +32,13 @@ class OptionsMiddleware(BaseHTTPMiddleware):
 # Add OPTIONS middleware first
 app.add_middleware(OptionsMiddleware)
 
-# Add CORS middleware - THIS IS REQUIRED FOR YOUR FRONTEND
+# Add CORS middleware with permissive settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://marsel-to-do-list.vercel.app",  # Production Vercel frontend
-        "http://localhost:3000",  # Local development
-        "http://127.0.0.1:3000",  # Local development alternative
-        "http://localhost:5173",  # Vite default port
-        "http://127.0.0.1:5173",  # Vite alternative
-    ],
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["*"],
-    max_age=86400,  # Cache CORS preflight requests for 24 hours
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Handle OPTIONS requests for CORS preflight
