@@ -8,13 +8,22 @@ from .database import SessionLocal, engine
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+app = FastAPI(
+    title="Todo List API",
+    description="A simple todo list API built with FastAPI",
+    version="1.0.0"
+)
 
+# CORS configuration
 origins = [
+    # Production frontends
     "https://v0-recreate-ui-from-screenshot-q3ulxx94b.vercel.app",
+    "https://v0-recreate-ui-from-screenshot-f3s08hb7x.vercel.app",
+    # Local development
     "http://localhost",
     "http://localhost:3000",
     "http://localhost:8080",
+    # Railway domains
     "https://*.railway.app",
     "https://*.up.railway.app",
 ]
@@ -23,7 +32,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
