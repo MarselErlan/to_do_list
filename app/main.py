@@ -21,43 +21,14 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Custom middleware to handle OPTIONS requests
-class OptionsMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if request.method == "OPTIONS":
-            response = Response(status_code=204)
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-            response.headers["Access-Control-Allow-Headers"] = "*"
-            response.headers["Access-Control-Max-Age"] = "86400"
-            return response
-        return await call_next(request)
-
-# Add OPTIONS middleware first
-app.add_middleware(OptionsMiddleware)
-
-# Add CORS middleware with specific origins
-origins = [
-    "http://localhost",
-    "http://localhost:3000",
-    "http://localhost:8000",
-    "http://localhost:8080",
-    "https://marsel-to-do-list.vercel.app",
-    "https://web-production-56fee.up.railway.app" # Your backend's own URL
-]
-
+# Add CORS middleware with permissive settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
-
-# Handle OPTIONS requests for CORS preflight
-@app.options("/{path:path}")
-async def options_handler(request: Request):
-    return Response(status_code=204)
 
 # Dependency
 def get_db():
