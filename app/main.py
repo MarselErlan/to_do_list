@@ -41,6 +41,7 @@ origins = [
     "http://localhost",
     "http://localhost:3000",
     "http://localhost:8000",
+    "http://localhost:8080",
     "https://marsel-to-do-list.vercel.app",
     "https://web-production-56fee.up.railway.app" # Your backend's own URL
 ]
