@@ -92,30 +92,30 @@ def read_todos_endpoint(skip: int = 0, limit: int = 100, db: Session = Depends(g
 # Time Management Endpoints
 
 @app.get("/todos/today", response_model=List[schemas.Todo])
-def get_todos_today_endpoint(db: Session = Depends(get_db)):
-    return crud.get_todos_today(db)
+def get_todos_today_endpoint(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return crud.get_todos_today(db, user_id=current_user.id)
 
 @app.get("/todos/week", response_model=List[schemas.Todo])
-def get_todos_for_week_endpoint(db: Session = Depends(get_db)):
-    return crud.get_todos_for_week(db)
+def get_todos_for_week_endpoint(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return crud.get_todos_for_week(db, user_id=current_user.id)
 
 @app.get("/todos/month", response_model=List[schemas.Todo])
-def get_todos_for_month_endpoint(db: Session = Depends(get_db)):
-    return crud.get_todos_for_month(db)
+def get_todos_for_month_endpoint(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return crud.get_todos_for_month(db, user_id=current_user.id)
 
 @app.get("/todos/year", response_model=List[schemas.Todo])
-def get_todos_for_year_endpoint(db: Session = Depends(get_db)):
-    return crud.get_todos_for_year(db)
+def get_todos_for_year_endpoint(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return crud.get_todos_for_year(db, user_id=current_user.id)
 
 @app.get("/todos/overdue", response_model=List[schemas.Todo])
-def get_overdue_todos_endpoint(db: Session = Depends(get_db)):
-    return crud.get_overdue_todos(db)
+def get_overdue_todos_endpoint(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return crud.get_overdue_todos(db, user_id=current_user.id)
 
 @app.get("/todos/range", response_model=List[schemas.Todo])
 def get_todos_by_date_range_endpoint(
-    start_date: date, end_date: date, db: Session = Depends(get_db)
+    start_date: date, end_date: date, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)
 ):
-    return crud.get_todos_by_date_range(db, start_date, end_date)
+    return crud.get_todos_by_date_range(db, user_id=current_user.id, start_date=start_date, end_date=end_date)
 
 @app.get("/todos/{todo_id}", response_model=schemas.Todo)
 def read_todo_endpoint(todo_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):

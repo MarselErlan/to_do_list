@@ -1,17 +1,16 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import os
 
 class Settings(BaseSettings):
-    database_url: str = "sqlite:///./test.db"  # Default for local development
+    database_url: str
     port: int = 8000
 
     # JWT Settings
-    secret_key: str = "a-very-secret-key-that-should-be-in-a-config-file"
+    secret_key: str
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

@@ -27,20 +27,23 @@ def db_session():
         Base.metadata.drop_all(bind=engine)
 
 def test_delete_todo(db: Session):
-    # First, create a todo to delete
+    # First, create a user and a todo to delete
+    user_in = schemas.UserCreate(username="testuser", password="testpassword")
+    db_user = crud.create_user(db=db, user=user_in)
     todo_in = schemas.TodoCreate(
-        title="Delete Me", 
+        title="Delete Me",
         description="A todo to be deleted",
         due_date=datetime.utcnow().date()
     )
-    db_todo = crud.create_todo(db=db, todo=todo_in)
-    todo_id = db_todo.id
-
-    # Now, delete it
-    deleted_todo = crud.delete_todo(db=db, todo_id=todo_id)
-    assert deleted_todo is not None
-    assert deleted_todo.id == todo_id
-
+    db_todo = crud.create_todo(db=db, todo=todo_in, owner_id=db_user.id)
+    
+    # Delete the todo
+    deleted_todo = crud.delete_todo(db=db, todo_id=db_todo.id)
+    assert deleted_todo.id == db_todo.id
+    
     # Verify it's gone
-    retrieved_todo = crud.get_todo(db=db, todo_id=todo_id)
-    assert retrieved_todo is None 
+    assert crud.get_todo(db=db, todo_id=db_todo.id) is None
+    
+    # Verify it's not in the user's list of todos
+    todos = crud.get_todos_by_user(db=db, user_id=db_user.id)
+    assert db_todo not in todos 

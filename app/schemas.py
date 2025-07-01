@@ -1,22 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from datetime import date, time
-
-# User Schemas
-class UserBase(BaseModel):
-    username: str
-    email: Optional[str] = None
-    phone_number: Optional[str] = None
-
-class UserCreate(UserBase):
-    password: str
-
-class User(UserBase):
-    id: int
-    is_active: bool
-    
-    class Config:
-        from_attributes = True
 
 # Todo Schemas
 class TodoBase(BaseModel):
@@ -45,19 +29,24 @@ class Todo(TodoBase):
     id: int
     done: bool
     owner_id: int
-    
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# Add relationships to User schema
+# User Schemas
+class UserBase(BaseModel):
+    username: str
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+
+class UserCreate(UserBase):
+    password: str
+
 class User(UserBase):
     id: int
     is_active: bool
-    todos: List[Todo] = []
-    
-    class Config:
-        from_attributes = True
+    todos: List["Todo"] = []
+    model_config = ConfigDict(from_attributes=True)
 
+# Token Schemas
 class Token(BaseModel):
     access_token: str
     token_type: str

@@ -27,10 +27,36 @@ def db_session():
         Base.metadata.drop_all(bind=engine)
 
 def test_get_todos(db: Session):
-    # Create a couple of todos
-    crud.create_todo(db=db, todo=schemas.TodoCreate(title="Todo 1", due_date=datetime.utcnow().date()))
-    crud.create_todo(db=db, todo=schemas.TodoCreate(title="Todo 2", due_date=datetime.utcnow().date()))
+    # Create a user and some todos
+    user_in = schemas.UserCreate(username="testuser", password="testpassword")
+    db_user = crud.create_user(db=db, user=user_in)
+    
+    crud.create_todo(db=db, todo=schemas.TodoCreate(title="Todo 1", due_date=datetime.utcnow().date()), owner_id=db_user.id)
+    crud.create_todo(db=db, todo=schemas.TodoCreate(title="Todo 2", due_date=datetime.utcnow().date()), owner_id=db_user.id)
 
-    # Retrieve them
-    todos_list = crud.get_todos(db=db)
-    assert len(todos_list) >= 2 
+    # Retrieve the todos for the user
+    todos = crud.get_todos_by_user(db=db, user_id=db_user.id)
+    assert len(todos) == 2
+    assert todos[0].title == "Todo 1"
+    assert todos[1].title == "Todo 2"
+
+def test_get_todos_data_isolation(db: Session):
+    # Create user 1 and a todo
+    user1_in = schemas.UserCreate(username="user1", password="pw1")
+    db_user1 = crud.create_user(db=db, user=user1_in)
+    crud.create_todo(db=db, todo=schemas.TodoCreate(title="User1 Todo"), owner_id=db_user1.id)
+
+    # Create user 2 and a todo
+    user2_in = schemas.UserCreate(username="user2", password="pw2")
+    db_user2 = crud.create_user(db=db, user=user2_in)
+    crud.create_todo(db=db, todo=schemas.TodoCreate(title="User2 Todo"), owner_id=db_user2.id)
+    
+    # Check that user 1 only sees their todo
+    user1_todos = crud.get_todos_by_user(db=db, user_id=db_user1.id)
+    assert len(user1_todos) == 1
+    assert user1_todos[0].title == "User1 Todo"
+    
+    # Check that user 2 only sees their todo
+    user2_todos = crud.get_todos_by_user(db=db, user_id=db_user2.id)
+    assert len(user2_todos) == 1
+    assert user2_todos[0].title == "User2 Todo" 
