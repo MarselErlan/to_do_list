@@ -1,10 +1,17 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
+import os
 
 class Settings(BaseSettings):
-    database_url: Optional[str] = "postgresql://user:password@localhost/todo_db"
+    database_url: str = "sqlite:///./test.db"  # Default for local development
+    port: int = 8000
 
     class Config:
         env_file = ".env"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Railway provides DATABASE_URL automatically for PostgreSQL
+        if os.getenv("DATABASE_URL"):
+            self.database_url = os.getenv("DATABASE_URL")
 
 settings = Settings() 
