@@ -1,9 +1,9 @@
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from app.crud import create_todo, get_todo
+from app import crud, schemas
 from app.models import Base
-from app.schemas import ToDoCreate
+from datetime import datetime
 
 # Use an in-memory SQLite database for testing
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -26,10 +26,18 @@ def db_session():
         db.close()
         Base.metadata.drop_all(bind=engine)
 
-def test_get_todo(db_session: Session):
-    todo_in = ToDoCreate(title="Test Get Todo", description="Test get description")
-    db_todo = create_todo(db_session, todo_in)
-    retrieved_todo = get_todo(db_session, db_todo.id)
-    assert retrieved_todo
-    assert retrieved_todo.id == db_todo.id
-    assert retrieved_todo.title == "Test Get Todo" 
+def test_get_todo(db: Session):
+    # First, create a todo
+    todo_in = schemas.TodoCreate(
+        title="Get Me", 
+        description="A todo to be retrieved",
+        due_date=datetime.utcnow().date()
+    )
+    db_todo = crud.create_todo(db=db, todo=todo_in)
+    todo_id = db_todo.id
+
+    # Now, retrieve it
+    retrieved_todo = crud.get_todo(db=db, todo_id=todo_id)
+    assert retrieved_todo is not None
+    assert retrieved_todo.id == todo_id
+    assert retrieved_todo.title == todo_in.title 

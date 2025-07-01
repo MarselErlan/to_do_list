@@ -6,33 +6,32 @@ from fastapi.testclient import TestClient
 def test_smoke_time_management_workflow(client: TestClient):
     """Smoke test: Complete time management workflow"""
     today = date.today()
-    tomorrow = today + timedelta(days=1)
-    
+
     # Create a todo with time fields
     todo_data = {
         "title": "Smoke Test Time Todo",
         "description": "Testing time management",
-        "start_time": "2024-12-25T09:00:00",
-        "end_time": "2024-12-25T10:30:00",
+        "start_date": today.isoformat(),
+        "start_time": "09:00:00",
         "due_date": today.isoformat()
     }
-    
+
     # Create todo
     create_response = client.post("/todos/", json=todo_data)
     assert create_response.status_code == 200
-    
-    created_todo = create_response.json()
-    assert created_todo["title"] == "Smoke Test Time Todo"
-    assert created_todo["due_date"] == today.isoformat()
-    
-    # Test today endpoint
+    todo_id = create_response.json()["id"]
+
+    # Verify retrieval
+    get_response = client.get(f"/todos/{todo_id}")
+    assert get_response.status_code == 200
+    retrieved_data = get_response.json()
+    assert retrieved_data["start_date"] == today.isoformat()
+    assert retrieved_data["start_time"] == "09:00:00"
+
+    # Verify it appears in today's list
     today_response = client.get("/todos/today")
     assert today_response.status_code == 200
-    today_todos = today_response.json()
-    
-    # Our todo should be in today's list
-    todo_titles = [todo["title"] for todo in today_todos]
-    assert "Smoke Test Time Todo" in todo_titles
+    assert any(todo["id"] == todo_id for todo in today_response.json())
 
 @pytest.mark.smoke
 def test_smoke_overdue_detection(client: TestClient):

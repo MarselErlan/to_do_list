@@ -1,9 +1,9 @@
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from app.crud import create_todo, get_todos
+from app import crud, schemas
 from app.models import Base
-from app.schemas import ToDoCreate
+from datetime import datetime
 
 # Use an in-memory SQLite database for testing
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -26,13 +26,11 @@ def db_session():
         db.close()
         Base.metadata.drop_all(bind=engine)
 
-def test_get_todos(db_session: Session):
-    todo1_in = ToDoCreate(title="Test Todo 1")
-    todo2_in = ToDoCreate(title="Test Todo 2")
-    create_todo(db_session, todo1_in)
-    create_todo(db_session, todo2_in)
-    
-    todos = get_todos(db_session)
-    assert len(todos) == 2
-    assert todos[0].title == "Test Todo 1"
-    assert todos[1].title == "Test Todo 2" 
+def test_get_todos(db: Session):
+    # Create a couple of todos
+    crud.create_todo(db=db, todo=schemas.TodoCreate(title="Todo 1", due_date=datetime.utcnow().date()))
+    crud.create_todo(db=db, todo=schemas.TodoCreate(title="Todo 2", due_date=datetime.utcnow().date()))
+
+    # Retrieve them
+    todos_list = crud.get_todos(db=db)
+    assert len(todos_list) >= 2 

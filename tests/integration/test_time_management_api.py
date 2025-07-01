@@ -7,8 +7,10 @@ def test_create_todo_with_time_fields_api(client: TestClient):
     todo_data = {
         "title": "API Time Test",
         "description": "Testing time fields via API",
-        "start_time": "2024-12-25T09:00:00",
-        "end_time": "2024-12-25T10:30:00",
+        "start_date": "2024-12-25",
+        "start_time": "09:00:00",
+        "end_date": "2024-12-25",
+        "end_time": "10:30:00",
         "due_date": "2024-12-25"
     }
     
@@ -17,8 +19,10 @@ def test_create_todo_with_time_fields_api(client: TestClient):
     
     data = response.json()
     assert data["title"] == "API Time Test"
-    assert data["start_time"] == "2024-12-25T09:00:00"
-    assert data["end_time"] == "2024-12-25T10:30:00"
+    assert data["start_date"] == "2024-12-25"
+    assert data["start_time"] == "09:00:00"
+    assert data["end_date"] == "2024-12-25"
+    assert data["end_time"] == "10:30:00"
     assert data["due_date"] == "2024-12-25"
 
 def test_create_todo_without_time_fields_api(client: TestClient):
@@ -33,7 +37,9 @@ def test_create_todo_without_time_fields_api(client: TestClient):
     
     data = response.json()
     assert data["title"] == "Simple API Todo"
+    assert data["start_date"] is None
     assert data["start_time"] is None
+    assert data["end_date"] is None
     assert data["end_time"] is None
     assert data["due_date"] is None
 
@@ -187,20 +193,13 @@ def test_get_overdue_todos_endpoint(client: TestClient):
 
 def test_update_todo_with_time_fields_api(client: TestClient):
     """Test updating a todo with time fields via API"""
-    # Create initial todo
-    create_data = {
-        "title": "Update Time Test",
-        "description": "Initial description"
-    }
-    
-    create_response = client.post("/todos/", json=create_data)
+    create_response = client.post("/todos/", json={"title": "Update Time Test"})
     todo_id = create_response.json()["id"]
     
-    # Update with time fields
     update_data = {
         "title": "Updated with Time API",
-        "start_time": "2024-12-26T14:00:00",
-        "end_time": "2024-12-26T15:30:00",
+        "start_date": "2024-12-26",
+        "start_time": "14:00:00",
         "due_date": "2024-12-26"
     }
     
@@ -209,8 +208,8 @@ def test_update_todo_with_time_fields_api(client: TestClient):
     
     data = update_response.json()
     assert data["title"] == "Updated with Time API"
-    assert data["start_time"] == "2024-12-26T14:00:00"
-    assert data["end_time"] == "2024-12-26T15:30:00"
+    assert data["start_date"] == "2024-12-26"
+    assert data["start_time"] == "14:00:00"
     assert data["due_date"] == "2024-12-26"
 
 def test_get_todos_by_date_range_endpoint(client: TestClient):
@@ -255,22 +254,26 @@ def test_time_fields_in_response_format(client: TestClient):
     """Test that time fields are properly formatted in API responses"""
     todo_data = {
         "title": "Format Test",
-        "start_time": "2024-12-25T09:00:00",
-        "end_time": "2024-12-25T10:30:00", 
-        "due_date": "2024-12-25"
+        "start_date": "2024-12-25",
+        "start_time": "09:00:00"
     }
     
     response = client.post("/todos/", json=todo_data)
     assert response.status_code == 200
-    
     data = response.json()
+
+    # Verify presence
+    assert "start_date" in data
+    assert "start_time" in data
     
     # Verify ISO format
+    assert isinstance(data["start_date"], str)
     assert isinstance(data["start_time"], str)
-    assert isinstance(data["end_time"], str) 
-    assert isinstance(data["due_date"], str)
     
     # Verify parseable
-    datetime.fromisoformat(data["start_time"])
-    datetime.fromisoformat(data["end_time"])
-    date.fromisoformat(data["due_date"]) 
+    from datetime import time, date
+    date.fromisoformat(data["start_date"])
+    time.fromisoformat(data["start_time"])
+    
+    assert data["start_date"] == "2024-12-25"
+    assert data["start_time"] == "09:00:00" 

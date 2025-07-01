@@ -9,7 +9,7 @@ from fastapi.routing import APIRoute
 from . import crud, models, schemas
 from .database import SessionLocal, engine
 
-models.Base.metadata.create_all(bind=engine)
+# models.Base.metadata.create_all(bind=engine) # This should be handled by Alembic in production
 
 app = FastAPI(
     title="Todo List API",

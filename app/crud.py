@@ -27,7 +27,7 @@ def create_todo(db: Session, todo: schemas.TodoCreate):
 def update_todo(db: Session, todo_id: int, todo: schemas.TodoUpdate):
     db_todo = db.query(models.Todo).filter(models.Todo.id == todo_id).first()
     if db_todo:
-        update_data = todo.dict(exclude_unset=True)
+        update_data = todo.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(db_todo, key, value)
         db.commit()
@@ -56,6 +56,7 @@ def get_todos_for_week(db: Session):
     week_end = week_start + timedelta(days=6)
     
     return db.query(models.Todo).filter(
+        models.Todo.due_date != None,
         models.Todo.due_date >= week_start,
         models.Todo.due_date <= week_end
     ).all()
@@ -74,6 +75,7 @@ def get_todos_for_month(db: Session):
     month_end = next_month_start - timedelta(days=1)
     
     return db.query(models.Todo).filter(
+        models.Todo.due_date != None,
         models.Todo.due_date >= month_start,
         models.Todo.due_date <= month_end
     ).all()
@@ -85,6 +87,7 @@ def get_todos_for_year(db: Session):
     year_end = today.replace(month=12, day=31)
     
     return db.query(models.Todo).filter(
+        models.Todo.due_date != None,
         models.Todo.due_date >= year_start,
         models.Todo.due_date <= year_end
     ).all()
@@ -93,6 +96,7 @@ def get_overdue_todos(db: Session):
     """Get todos that are overdue (due date is in the past and not completed)"""
     today = date.today()
     return db.query(models.Todo).filter(
+        models.Todo.due_date != None,
         models.Todo.due_date < today,
         models.Todo.done == False
     ).all()
@@ -111,5 +115,10 @@ def get_todos_by_date_range(db: Session, start_date: date, end_date: date):
     return db.query(models.Todo).filter(
         models.Todo.due_date.between(start_date, end_date)
     ).all()
+
+def get_todos_today(db: Session):
+    """Get todos due today"""
+    today = date.today()
+    return db.query(models.Todo).filter(models.Todo.due_date == today).all()
 
  
