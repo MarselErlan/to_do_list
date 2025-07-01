@@ -8,20 +8,16 @@ from .database import SessionLocal, engine
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+app = FastAPI(
+    title="Todo List API",
+    description="A simple todo list API built with FastAPI",
+    version="1.0.0"
+)
 
-origins = [
-    "https://v0-recreate-ui-from-screenshot-q3ulxx94b.vercel.app",
-    "http://localhost",
-    "http://localhost:3000",
-    "http://localhost:8080",
-    "https://*.railway.app",
-    "https://*.up.railway.app",
-]
-
+# Add CORS middleware - THIS IS REQUIRED FOR YOUR FRONTEND
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # In production, use your specific domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
