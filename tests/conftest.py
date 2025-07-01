@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+import os
 
 from app.main import app, get_db
 from app.database import Base
@@ -15,6 +16,16 @@ engine = create_engine(
     poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@pytest.fixture(scope="session")
+def live_api_url():
+    """Get the live API URL from environment or use default Railway URL"""
+    return os.getenv("LIVE_API_URL", "https://web-production-56fee.up.railway.app/")
+
+@pytest.fixture(scope="session")
+def frontend_url():
+    """Get the frontend URL from environment or use default Vercel URL"""
+    return os.getenv("FRONTEND_URL", "https://marsel-to-do-list.vercel.app")
 
 @pytest.fixture(scope="function")
 def db():

@@ -1,6 +1,7 @@
 import pytest
 import requests
 from fastapi.testclient import TestClient
+from datetime import date
 
 @pytest.mark.sanity
 class TestAPISanity:
@@ -56,7 +57,7 @@ class TestAPISanity:
         
         data = update_response.json()
         assert data["title"] == "Updated Sanity Todo"
-        assert data["done"] == True
+        assert data["done"] is True
         
     def test_delete_todo_basic(self, client: TestClient, sample_todo):
         """Sanity: Verify we can delete a todo"""
@@ -72,6 +73,7 @@ class TestAPISanity:
         get_response = client.get(f"/todos/{todo_id}")
         assert get_response.status_code == 404
         
+    @pytest.mark.regression
     def test_complete_todo_workflow(self, client: TestClient):
         """Sanity: Test complete CRUD workflow in one go"""
         # Create
@@ -97,7 +99,7 @@ class TestAPISanity:
         # Update
         update_response = client.put(f"/todos/{todo_id}", json={"done": True})
         assert update_response.status_code == 200
-        assert update_response.json()["done"] == True
+        assert update_response.json()["done"] is True
         
         # Delete
         delete_response = client.delete(f"/todos/{todo_id}")
@@ -107,11 +109,58 @@ class TestAPISanity:
         final_get = client.get(f"/todos/{todo_id}")
         assert final_get.status_code == 404
 
+    @pytest.mark.regression
+    def test_time_management_endpoints_sanity(self, client: TestClient):
+        """Sanity: Verify time management endpoints are accessible"""
+        from datetime import date
+        
+        # Test all time management endpoints exist and return 200
+        endpoints = [
+            "/todos/today",
+            "/todos/week", 
+            "/todos/month",
+            "/todos/year",
+            "/todos/overdue"
+        ]
+        
+        for endpoint in endpoints:
+            response = client.get(endpoint)
+            assert response.status_code == 200
+            assert isinstance(response.json(), list)
+        
+        # Test date range endpoint
+        today = date.today()
+        range_response = client.get(f"/todos/range?start_date={today}&end_date={today}")
+        assert range_response.status_code == 200
+        assert isinstance(range_response.json(), list)
+
+    def test_create_todo_with_time_fields_sanity(self, client: TestClient):
+        """Sanity: Verify we can create todos with time fields"""
+        from datetime import date
+        
+        todo_with_time = {
+            "title": "Sanity Time Todo",
+            "description": "Testing time fields",
+            "start_date": "2024-12-25",
+            "start_time": "09:00:00",
+            "due_date": date.today().isoformat()
+        }
+        
+        response = client.post("/todos/", json=todo_with_time)
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["title"] == "Sanity Time Todo"
+        assert data["start_date"] == "2024-12-25"
+        assert data["start_time"] == "09:00:00"
+        assert data["due_date"] == date.today().isoformat()
+
 @pytest.mark.sanity
 @pytest.mark.live
 class TestLiveAPISanity:
     """Sanity tests against live API deployment"""
     
+    @pytest.mark.regression
     def test_live_api_health(self, live_api_url):
         """Sanity: Verify live API is accessible"""
         try:
@@ -120,6 +169,7 @@ class TestLiveAPISanity:
         except requests.RequestException as e:
             pytest.skip(f"Live API not accessible: {e}")
             
+    @pytest.mark.regression
     def test_live_api_todos_endpoint(self, live_api_url):
         """Sanity: Verify live API todos endpoint works"""
         try:
@@ -140,5 +190,18 @@ class TestLiveAPISanity:
             headers = response.headers
             assert "access-control-allow-origin" in headers
             
+        except requests.RequestException as e:
+            pytest.skip(f"Live API not accessible: {e}")
+
+    def test_live_time_management_endpoints(self, live_api_url):
+        """Sanity: Verify live time management endpoints work"""
+        try:
+            endpoints = ["/todos/today", "/todos/week", "/todos/month", "/todos/year", "/todos/overdue"]
+            
+            for endpoint in endpoints:
+                response = requests.get(f"{live_api_url}{endpoint}", timeout=10)
+                assert response.status_code == 200
+                assert isinstance(response.json(), list)
+                
         except requests.RequestException as e:
             pytest.skip(f"Live API not accessible: {e}") 

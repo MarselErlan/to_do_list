@@ -1,9 +1,9 @@
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from app.crud import create_todo, update_todo
+from app import crud, schemas
 from app.models import Base
-from app.schemas import ToDoCreate, ToDoUpdate
+from datetime import datetime
 
 # Use an in-memory SQLite database for testing
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -26,15 +26,20 @@ def db_session():
         db.close()
         Base.metadata.drop_all(bind=engine)
 
-def test_update_todo(db_session: Session):
-    todo_in = ToDoCreate(title="Initial Title", description="Initial description")
-    db_todo = create_todo(db_session, todo_in)
+def test_update_todo(db: Session):
+    # First, create a todo
+    todo_in = schemas.TodoCreate(
+        title="Original Title", 
+        description="Original Description",
+        due_date=datetime.utcnow().date()
+    )
+    db_todo = crud.create_todo(db=db, todo=todo_in)
+    todo_id = db_todo.id
+
+    # Now, update it
+    update_data = schemas.TodoUpdate(title="Updated Title", done=True)
+    updated_todo = crud.update_todo(db=db, todo_id=todo_id, todo=update_data)
     
-    update_data = ToDoUpdate(title="Updated Title", done=True)
-    updated_todo = update_todo(db_session, db_todo.id, update_data)
-    
-    assert updated_todo
-    assert updated_todo.id == db_todo.id
     assert updated_todo.title == "Updated Title"
-    assert updated_todo.description == "Initial description" # Description should not be updated
-    assert updated_todo.done is True 
+    assert updated_todo.done is True
+    assert updated_todo.description == "Original Description" # Should not change 

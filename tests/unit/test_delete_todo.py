@@ -1,9 +1,9 @@
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from app.crud import create_todo, get_todo, delete_todo
+from app import crud, schemas
 from app.models import Base
-from app.schemas import ToDoCreate
+from datetime import datetime
 
 # Use an in-memory SQLite database for testing
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -26,14 +26,21 @@ def db_session():
         db.close()
         Base.metadata.drop_all(bind=engine)
 
-def test_delete_todo(db_session: Session):
-    todo_in = ToDoCreate(title="To Be Deleted")
-    db_todo = create_todo(db_session, todo_in)
+def test_delete_todo(db: Session):
+    # First, create a todo to delete
+    todo_in = schemas.TodoCreate(
+        title="Delete Me", 
+        description="A todo to be deleted",
+        due_date=datetime.utcnow().date()
+    )
+    db_todo = crud.create_todo(db=db, todo=todo_in)
     todo_id = db_todo.id
-    
-    deleted_todo = delete_todo(db_session, todo_id)
-    assert deleted_todo
+
+    # Now, delete it
+    deleted_todo = crud.delete_todo(db=db, todo_id=todo_id)
+    assert deleted_todo is not None
     assert deleted_todo.id == todo_id
-    
-    retrieved_todo = get_todo(db_session, todo_id)
+
+    # Verify it's gone
+    retrieved_todo = crud.get_todo(db=db, todo_id=todo_id)
     assert retrieved_todo is None 
