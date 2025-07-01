@@ -1,6 +1,7 @@
 import pytest
 import re
 from playwright.sync_api import Page, expect
+import uuid
 
 @pytest.mark.ui
 class TestTodoUI:
@@ -20,6 +21,9 @@ class TestTodoUI:
         """Test creating a new todo item"""
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
+        
+        # Generate a unique todo title
+        unique_todo_title = f"Test Todo {uuid.uuid4().hex[:8]}"
         
         # Find and fill the todo input field (common selectors)
         todo_input = None
@@ -41,7 +45,7 @@ class TestTodoUI:
                 continue
                 
         if todo_input and todo_input.is_visible():
-            todo_input.fill("Test Todo from Playwright")
+            todo_input.fill(unique_todo_title)
             
             # Find and click the submit button
             submit_selectors = [
@@ -64,7 +68,7 @@ class TestTodoUI:
             
             # Verify the todo appears in the list
             page.wait_for_timeout(2000)  # Wait for the todo to be added
-            expect(page.locator("text=Test Todo from Playwright")).to_be_visible()
+            expect(page.locator(f"text={unique_todo_title}").first).to_be_visible()
             
     def test_todo_list_displays(self, page: Page, base_url: str):
         """Test that the todo list displays correctly"""

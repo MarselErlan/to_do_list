@@ -18,10 +18,17 @@ app = FastAPI(
 # Add CORS middleware - THIS IS REQUIRED FOR YOUR FRONTEND
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, use your specific domain
+    allow_origins=[
+        "https://marsel-to-do-list.vercel.app",  # Production Vercel frontend
+        "http://localhost:3000",  # Local development
+        "http://127.0.0.1:3000",  # Local development alternative
+        "http://localhost:5173",  # Vite default port
+        "http://127.0.0.1:5173",  # Vite alternative
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    max_age=86400,  # Cache CORS preflight requests for 24 hours
 )
 
 # Dependency
