@@ -1,12 +1,16 @@
+import sys
+import os
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-import os
+from sqlalchemy.orm import Session
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app.main import app, get_db
-from app.database import Base
+from app.database import Base, SessionLocal
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 
@@ -27,35 +31,54 @@ def frontend_url():
     """Get the frontend URL from environment or use default Vercel URL"""
     return os.getenv("FRONTEND_URL", "https://marsel-to-do-list.vercel.app")
 
-@pytest.fixture(scope="function")
-def db():
+@pytest.fixture(scope="session")
+def test_db():
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(bind=engine)
-    db_session = TestingSessionLocal()
+    yield engine
+    Base.metadata.drop_all(bind=engine)
+
+@pytest.fixture(scope="function")
+def db(test_db):
+    connection = test_db.connect()
+    transaction = connection.begin()
+    db_session = Session(bind=connection)
     try:
         yield db_session
     finally:
         db_session.close()
-        Base.metadata.drop_all(bind=engine)
+        transaction.rollback()
+        connection.close()
 
-@pytest.fixture(scope="function")
+@pytest.fixture()
 def client(db):
     def override_get_db():
         yield db
+
     app.dependency_overrides[get_db] = override_get_db
     yield TestClient(app)
-    app.dependency_overrides.clear()
+    del app.dependency_overrides[get_db]
 
-@pytest.fixture(scope="function")
-def authenticated_client(client: TestClient, db):
+@pytest.fixture()
+def authenticated_client(client: TestClient, db: Session):
+    """
+    Creates a user, logs them in, and returns an authenticated client.
+    """
     from app.schemas import UserCreate
     from app.crud import create_user
+
     # Create a test user
     user_data = UserCreate(email="test@example.com", username="testuser", password="password")
-    user = create_user(db, user_data)
+    create_user(db, user_data)
     
     # Log in to get the token
     login_data = {"username": "testuser", "password": "password"}
     response = client.post("/token", data=login_data)
+    assert response.status_code == 200, response.text
     token = response.json()["access_token"]
     
     # Set the authorization header
