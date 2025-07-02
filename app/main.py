@@ -21,13 +21,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware with permissive settings
+# Add CORS middleware - THIS IS REQUIRED FOR YOUR FRONTEND
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=["*"],  # In production, use your specific domain
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/health", status_code=200)
