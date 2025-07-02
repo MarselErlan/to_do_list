@@ -178,6 +178,19 @@ def get_user_count(db: Session = Depends(get_db)):
     count = crud.count_users(db)
     return {"total_users": count}
 
+@app.post("/users/forgot-username", response_model=schemas.UsernameResponse)
+def forgot_username(request: schemas.EmailVerificationRequest, db: Session = Depends(get_db)):
+    """
+    Retrieve a username by providing the associated email address.
+    """
+    user = crud.get_user_by_email(db, email=request.email)
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User with this email not found",
+        )
+    return {"username": user.username}
+
 # --- Email Verification Endpoints ---
 
 @app.post("/auth/request-verification")
@@ -200,7 +213,7 @@ async def request_verification_code(
     
     return {"message": "Verification code sent successfully"}
 
-@app.post("/auth/forgot-password")
+@app.post("/auth/forgot-password", response_model=schemas.PasswordResetRequestResponse)
 async def forgot_password(
     request: schemas.EmailVerificationRequest,
     db: Session = Depends(get_db)
@@ -229,7 +242,7 @@ async def forgot_password(
     code = crud.create_verification_code(db, email=request.email)
     await send_verification_email(email_to=request.email, code=code)
 
-    return {"message": "Password reset code sent"}
+    return {"message": "Password reset code sent", "username": user.username}
 
 @app.post("/auth/reset-password")
 def reset_password(request: schemas.PasswordReset, db: Session = Depends(get_db)):
