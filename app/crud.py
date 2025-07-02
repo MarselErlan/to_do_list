@@ -3,6 +3,11 @@ from datetime import date, timedelta, datetime
 from typing import Optional
 from . import models, schemas
 from .security import get_password_hash, verify_password
+from passlib.context import CryptContext
+import random
+import string
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # User CRUD Functions
 
@@ -30,8 +35,11 @@ def get_user_by_email(db: Session, email: str):
 def get_users(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.User).offset(skip).limit(limit).all()
 
+def get_hashed_password(password: str) -> str:
+    return pwd_context.hash(password)
+
 def create_user(db: Session, user: schemas.UserCreate):
-    hashed_password = get_password_hash(user.password)
+    hashed_password = get_hashed_password(user.password)
     db_user = models.User(
         username=user.username,
         email=user.email,
@@ -41,6 +49,18 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.commit()
     db.refresh(db_user)
     return db_user
+
+def update_user_password(db: Session, user: models.User, new_password: str):
+    """Updates a user's password."""
+    user.hashed_password = get_hashed_password(new_password)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+def count_users(db: Session) -> int:
+    """Returns the total number of users in the database."""
+    return db.query(models.User).count()
 
 # Todo CRUD Functions
 
@@ -158,5 +178,78 @@ def get_todos_by_date_range(db: Session, user_id: int, start_date: date, end_dat
         models.Todo.owner_id == user_id,
         models.Todo.due_date.between(start_date, end_date)
     ).all()
+
+# --- Email Verification CRUD ---
+
+def create_verification_code(db: Session, email: str) -> str:
+    """
+    Generates, stores, and returns a 6-digit verification code for an email.
+    """
+    # Generate a simple 6-digit code
+    plain_code = "".join(random.choices(string.digits, k=6))
+    
+    # In a real app, you would hash this code for security
+    hashed_code = pwd_context.hash(plain_code)
+    
+    # Remove any existing code for this email
+    db.query(models.EmailVerification).filter(models.EmailVerification.email == email).delete()
+    
+    db_verification = models.EmailVerification(
+        email=email,
+        code=hashed_code 
+    )
+    db.add(db_verification)
+    db.commit()
+    db.refresh(db_verification)
+    
+    # Return the plain code to be sent to the user
+    return plain_code
+
+def verify_code(db: Session, email: str, code: str) -> bool:
+    """
+    Verifies the provided code for the given email.
+    """
+    verification_entry = get_verification_code(db, email=email)
+    
+    if not verification_entry:
+        return False
+        
+    # Check if expired
+    if verification_entry.expires_at < datetime.utcnow():
+        return False
+        
+    # Check if code matches
+    if not pwd_context.verify(code, verification_entry.code):
+        return False
+        
+    # Mark as verified and clean up
+    verification_entry.verified = True
+    db.commit()
+    
+    return True
+
+def get_verification_code(db: Session, email: str) -> models.EmailVerification:
+    """
+    Retrieves the latest verification code entry for an email.
+    """
+    return db.query(models.EmailVerification).filter(models.EmailVerification.email == email).first()
+
+def cleanup_expired_codes(db: Session) -> int:
+    """
+    Deletes all unverified and expired email verification codes from the database.
+    Returns the number of deleted records.
+    """
+    now = datetime.utcnow()
+    
+    # Query for records that are unverified AND past their expiration time
+    expired_codes_query = db.query(models.EmailVerification).filter(
+        models.EmailVerification.verified == False,
+        models.EmailVerification.expires_at < now
+    )
+    
+    deleted_count = expired_codes_query.delete(synchronize_session=False)
+    db.commit()
+    
+    return deleted_count
 
  

@@ -12,6 +12,7 @@ from . import crud, models, schemas
 from .database import SessionLocal, engine
 from .security import create_access_token
 from .config import settings
+from .email import send_verification_email
 
 # models.Base.metadata.create_all(bind=engine) # This should be handled by Alembic in production
 
@@ -168,6 +169,126 @@ def create_user_endpoint(user: schemas.UserCreate, db: Session = Depends(get_db)
             raise HTTPException(status_code=400, detail="Email already registered")
 
     return crud.create_user(db=db, user=user)
+
+@app.get("/users/count", response_model=schemas.UserCount)
+def get_user_count(db: Session = Depends(get_db)):
+    """
+    Get the total number of registered users.
+    """
+    count = crud.count_users(db)
+    return {"total_users": count}
+
+# --- Email Verification Endpoints ---
+
+@app.post("/auth/request-verification")
+async def request_verification_code(
+    request: schemas.EmailVerificationRequest, 
+    db: Session = Depends(get_db)
+):
+    """
+    Request a verification code for an email address.
+    This will generate a code, save it, and email it.
+    """
+    # Check if user already exists
+    db_user = crud.get_user_by_email(db, email=request.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+
+    code = crud.create_verification_code(db, email=request.email)
+    
+    await send_verification_email(email_to=request.email, code=code)
+    
+    return {"message": "Verification code sent successfully"}
+
+@app.post("/auth/forgot-password")
+async def forgot_password(
+    request: schemas.EmailVerificationRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Request a password reset code.
+    This will check for a user and enforce a rate limit.
+    """
+    # 1. Check if user exists
+    user = crud.get_user_by_email(db, email=request.email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User with this email not found")
+
+    # 2. Check for rate-limiting
+    existing_code = crud.get_verification_code(db, email=request.email)
+    if existing_code:
+        time_since_creation = datetime.utcnow() - existing_code.created_at
+        if time_since_creation < timedelta(hours=5):
+            wait_time = timedelta(hours=5) - time_since_creation
+            raise HTTPException(
+                status_code=429,
+                detail=f"Please wait before requesting another code. Try again in {wait_time}."
+            )
+
+    # 3. Create and send new code
+    code = crud.create_verification_code(db, email=request.email)
+    await send_verification_email(email_to=request.email, code=code)
+
+    return {"message": "Password reset code sent"}
+
+@app.post("/auth/reset-password")
+def reset_password(request: schemas.PasswordReset, db: Session = Depends(get_db)):
+    """
+    Reset a user's password using a valid verification code.
+    """
+    # 1. Verify the code is valid and not expired
+    if not crud.verify_code(db, email=request.email, code=request.code):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired verification code",
+        )
+
+    # 2. Get the user
+    user = crud.get_user_by_email(db, email=request.email)
+    if not user:
+        # This case is unlikely if verify_code passed, but it's a good safeguard
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # 3. Update the password
+    crud.update_user_password(db, user=user, new_password=request.new_password)
+
+    # Invalidate the used verification code by deleting it
+    db.query(models.EmailVerification).filter(models.EmailVerification.email == request.email).delete()
+    db.commit()
+
+    return {"message": "Password has been reset successfully"}
+
+@app.post("/auth/register", response_model=schemas.Token)
+def register_user(user_data: schemas.UserCreateAndVerify, db: Session = Depends(get_db)):
+    """
+    Register a new user after verifying the email code.
+    """
+    # 1. Verify the code
+    is_valid = crud.verify_code(db, email=user_data.email, code=user_data.code)
+    if not is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired verification code",
+        )
+        
+    # 2. Check for existing user (double-check)
+    db_user_by_username = crud.get_user_by_username(db, username=user_data.username)
+    if db_user_by_username:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    db_user_by_email = crud.get_user_by_email(db, email=user_data.email)
+    if db_user_by_email:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # 3. Create the user
+    new_user = crud.create_user(db=db, user=user_data)
+    
+    # 4. Return an access token
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = create_access_token(
+        data={"sub": new_user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
 
 # --- Authentication Endpoint ---
 

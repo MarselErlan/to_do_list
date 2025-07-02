@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from datetime import date, time
+from pydantic import EmailStr
 
 # Todo Schemas
 class TodoBase(BaseModel):
@@ -29,12 +30,13 @@ class Todo(TodoBase):
     id: int
     done: bool
     owner_id: int
+
     model_config = ConfigDict(from_attributes=True)
 
 # User Schemas
 class UserBase(BaseModel):
     username: str
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     phone_number: Optional[str] = None
 
 class UserCreate(UserBase):
@@ -52,4 +54,22 @@ class Token(BaseModel):
     token_type: str
 
 class TokenData(BaseModel):
-    username: Optional[str] = None 
+    username: Optional[str] = None
+
+class EmailVerificationRequest(BaseModel):
+    email: EmailStr
+
+class EmailVerificationCode(BaseModel):
+    email: EmailStr
+    code: str
+
+class UserCreateAndVerify(UserCreate):
+    code: str
+
+class UserCount(BaseModel):
+    total_users: int
+
+class PasswordReset(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str 
