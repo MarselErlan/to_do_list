@@ -9,6 +9,12 @@ echo "====================================="
 # Set environment variables
 export PYTHONPATH=.
 
+# Load environment variables from .env file if it exists
+if [ -f .env ]; then
+    echo "🔑 Loading environment variables from .env file"
+    source .env
+fi
+
 # Check if virtual environment is activated
 if [[ "$VIRTUAL_ENV" != "" ]]; then
     echo "✅ Virtual environment detected: $VIRTUAL_ENV"

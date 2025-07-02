@@ -12,7 +12,8 @@ from app.security import get_password_hash
 
 def test_request_password_reset_success(client, db, monkeypatch):
     """
-    Tests that a registered user can successfully request a password reset code.
+    Tests that a registered user can successfully request a password reset code
+    and gets their username back in the response.
     """
     # Mock email sending
     async def mock_send_email(email_to: str, code: str):
@@ -28,7 +29,9 @@ def test_request_password_reset_success(client, db, monkeypatch):
 
     # 3. Assertions
     assert response.status_code == 200
-    assert response.json() == {"message": "Password reset code sent"}
+    data = response.json()
+    assert data["message"] == "Password reset code sent"
+    assert data["username"] == "reset_user"
     
     # Verify a code was created in the DB
     verification = crud.get_verification_code(db, email="reset@example.com")

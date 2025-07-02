@@ -66,8 +66,15 @@ class EmailVerificationCode(BaseModel):
 class UserCreateAndVerify(UserCreate):
     code: str
 
+class PasswordResetRequestResponse(BaseModel):
+    message: str
+    username: str
+
 class UserCount(BaseModel):
     total_users: int
+
+class UsernameResponse(BaseModel):
+    username: str
 
 class PasswordReset(BaseModel):
     email: EmailStr
