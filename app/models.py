@@ -2,6 +2,7 @@ from sqlalchemy import Boolean, Column, Integer, String, DateTime, Date, Time, F
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from .database import Base
+from datetime import datetime, timedelta
 
 class User(Base):
     __tablename__ = "users"
@@ -31,4 +32,14 @@ class Todo(Base):
     due_date = Column(Date, nullable=True)
 
     owner_id = Column(Integer, ForeignKey("users.id"))
-    owner = relationship("User", back_populates="todos") 
+    owner = relationship("User", back_populates="todos")
+
+class EmailVerification(Base):
+    __tablename__ = "email_verifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    code = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(minutes=5))
+    verified = Column(Boolean, default=False) 

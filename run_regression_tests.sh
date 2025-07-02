@@ -3,16 +3,17 @@ set -e
 
 echo "--- Running Regression Test Suite ---"
 
-# Activate virtual environment
-source venv/bin/activate
+# Set necessary environment variables for the test run
+export SECRET_KEY='test-secret'
+export MAIL_USERNAME='testuser'
+export MAIL_PASSWORD='testpassword'
+export MAIL_FROM='test@example.com'
+export MAIL_PORT=587
+export MAIL_SERVER='smtp.test.com'
+export MAIL_STARTTLS='True'
+export MAIL_SSL_TLS='False'
 
-# Set PYTHONPATH to include the app directory
-export PYTHONPATH=$PYTHONPATH:.
-
-# Set the live API URL for the tests
-export LIVE_API_URL="https://web-production-56fee.up.railway.app"
-
-# Run only the tests marked as "regression"
-pytest -m regression -v
+# Run pytest on the entire tests directory
+pytest tests/
 
 echo "--- Regression Test Suite Finished ---" 
