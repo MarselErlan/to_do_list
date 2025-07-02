@@ -21,14 +21,34 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware - THIS IS REQUIRED FOR YOUR FRONTEND
+# Custom middleware to handle OPTIONS requests
+class OptionsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS":
+            response = Response(status_code=204)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Max-Age"] = "86400"
+            return response
+        return await call_next(request)
+
+# Add OPTIONS middleware first
+app.add_middleware(OptionsMiddleware)
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, use your specific domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Handle OPTIONS requests for CORS preflight
+@app.options("/{path:path}")
+async def options_handler(request: Request):
+    return Response(status_code=204)
 
 @app.get("/health", status_code=200)
 def health_check():
