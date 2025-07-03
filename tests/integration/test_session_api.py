@@ -818,17 +818,13 @@ def test_user_leaves_team_session_and_session_is_deleted(client: TestClient, db:
     check_session_members_response = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers)
     assert check_session_members_response.status_code == 404
 
-    # 9. Verify owner's todo is now private and in their private session
-    owner_todo_after_leave = client.get(f"/todos/{owner_created_todo_id}", headers=owner_headers).json()
-    assert owner_todo_after_leave["is_private"] is True
-    owner_private_session = crud.get_private_session_for_user(db, owner_obj.id)
-    assert owner_todo_after_leave["session_id"] == owner_private_session.id
+    # 9. Verify owner's todo is deleted (attempting to access should fail with 404)
+    owner_todo_after_leave_response = client.get(f"/todos/{owner_created_todo_id}", headers=owner_headers)
+    assert owner_todo_after_leave_response.status_code == 404
 
-    # 10. Verify collaborator's todo is now private and in their private session
-    collaborator_todo_after_leave = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
-    assert collaborator_todo_after_leave["is_private"] is True
-    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
-    assert collaborator_todo_after_leave["session_id"] == collab_private_session.id
+    # 10. Verify collaborator's todo is deleted (attempting to access should fail with 404)
+    collaborator_todo_after_leave_response = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers)
+    assert collaborator_todo_after_leave_response.status_code == 404
 
     # 11. Verify collaborator is no longer a member of the session
     check_collab_sessions_response = client.get("/sessions/", headers=collaborator_headers)

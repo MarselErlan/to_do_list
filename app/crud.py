@@ -128,6 +128,35 @@ def count_users(db: Session) -> int:
     """Returns the total number of users in the database."""
     return db.query(models.User).count()
 
+def delete_user(db: Session, user_id: int):
+    """
+    Deletes a user and all their associated data (private session, todos, session memberships).
+    If the user is an owner of a team session, that session is also deleted.
+    """
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not db_user:
+        raise ValueError("User not found.")
+
+    # 1. Delete all todos owned by the user (both private and public ones in team sessions)
+    db.query(models.Todo).filter(models.Todo.owner_id == user_id).delete(synchronize_session=False)
+
+    # 2. Delete all session memberships for the user
+    db.query(models.SessionMember).filter(models.SessionMember.user_id == user_id).delete(synchronize_session=False)
+
+    # 3. Identify and delete sessions created by this user (which will cascade delete their associated members and todos)
+    # This includes their private session and any team sessions they owned.
+    sessions_created_by_user = db.query(models.Session).filter(models.Session.created_by_id == user_id).all()
+    for session in sessions_created_by_user:
+        # The delete_session function already handles reassignment of public todos owned by others in that session
+        # However, since we already deleted all todos owned by the user, this part primarily handles the session and other members
+        delete_session(db, session.id, user_id) # Call existing delete_session logic
+    
+    # 4. Finally, delete the user
+    db.delete(db_user)
+    db.commit()
+
+    return True
+
 # Todo CRUD Functions
 
 def get_todo(db: Session, todo_id: int):
@@ -233,29 +262,29 @@ def delete_todo(db: Session, todo_id: int):
 # Time Management Functions
 
 def get_todos_today(db: Session, user_id: int):
-    """Get todos for a specific user due today"""
+    """Get todos for a specific user due today, including private and relevant public todos."""
     today = date.today()
-    return db.query(models.Todo).filter(
-        models.Todo.owner_id == user_id,
+    return get_relevant_todos_query(db, user_id).filter(
         models.Todo.due_date == today
     ).all()
 
 def get_todos_for_week(db: Session, user_id: int):
-    """Get todos for a specific user due this week"""
+    """Get todos for a specific user due this week, including private and relevant public todos."""
     today = date.today()
     days_since_monday = today.weekday()
     week_start = today - timedelta(days=days_since_monday)
     week_end = week_start + timedelta(days=6)
     
-    return db.query(models.Todo).filter(
-        models.Todo.owner_id == user_id,
+    return get_relevant_todos_query(db, user_id).filter(
         models.Todo.due_date != None,
         models.Todo.due_date >= week_start,
         models.Todo.due_date <= week_end
     ).all()
 
 def get_todos_for_month(db: Session, user_id: int):
-    """Get todos for a specific user due this month"""
+    """
+    Get todos for a specific user due this month, including private and relevant public todos.
+    """
     today = date.today()
     month_start = today.replace(day=1)
     
@@ -266,49 +295,52 @@ def get_todos_for_month(db: Session, user_id: int):
     
     month_end = next_month_start - timedelta(days=1)
     
-    return db.query(models.Todo).filter(
-        models.Todo.owner_id == user_id,
+    return get_relevant_todos_query(db, user_id).filter(
         models.Todo.due_date != None,
         models.Todo.due_date >= month_start,
         models.Todo.due_date <= month_end
     ).all()
 
 def get_todos_for_year(db: Session, user_id: int):
-    """Get todos for a specific user due this year"""
+    """Get todos for a specific user due this year, including private and relevant public todos."""
     today = date.today()
     year_start = today.replace(month=1, day=1)
     year_end = today.replace(month=12, day=31)
     
-    return db.query(models.Todo).filter(
-        models.Todo.owner_id == user_id,
+    return get_relevant_todos_query(db, user_id).filter(
         models.Todo.due_date != None,
         models.Todo.due_date >= year_start,
         models.Todo.due_date <= year_end
     ).all()
 
 def get_overdue_todos(db: Session, user_id: int):
-    """Get overdue todos for a specific user"""
+    """Get overdue todos for a specific user, including private and relevant public todos."""
     today = date.today()
-    return db.query(models.Todo).filter(
-        models.Todo.owner_id == user_id,
+    return get_relevant_todos_query(db, user_id).filter(
         models.Todo.due_date != None,
         models.Todo.due_date < today,
         models.Todo.done == False
     ).all()
 
 def get_todos_by_time_range(db: Session, start_time: datetime, end_time: datetime):
-    """Get todos within a specific time range"""
+    """Get todos within a specific time range for all users."""
+    # This function is not user-specific, so it shouldn't use get_relevant_todos_query directly
+    # It's intended for broader queries, e.g., by admin or internal services.
     return db.query(models.Todo).filter(
         models.Todo.start_time >= start_time,
         models.Todo.start_time <= end_time
     ).all()
 
 def get_todos_by_date(db: Session, target_date: date):
+    """Get todos for a specific date for all users."""
+    # This function is not user-specific.
     return db.query(models.Todo).filter(models.Todo.due_date == target_date).all()
 
 def get_todos_by_date_range(db: Session, user_id: int, start_date: date, end_date: date):
-    return db.query(models.Todo).filter(
-        models.Todo.owner_id == user_id,
+    """
+    Get todos for a specific user within a date range, including private and relevant public todos.
+    """
+    return get_relevant_todos_query(db, user_id).filter(
         models.Todo.due_date.between(start_date, end_date)
     ).all()
 
@@ -464,6 +496,28 @@ def get_session_member_by_user_and_session(db: Session, session_id: int, user_id
         models.SessionMember.user_id == user_id
     ).first()
 
+def get_session(db: Session, session_id: int) -> models.Session | None:
+    """
+    Retrieves a session by its ID.
+    """
+    return db.query(models.Session).filter(models.Session.id == session_id).first()
+
+def get_relevant_todos_query(db: Session, user_id: int):
+    """
+    Returns a base query that includes a user's private todos and public todos
+    from sessions they are a member of.
+    """
+    # Get all session IDs the user is a member of
+    member_session_ids = [s.id for s in db.query(models.Session).join(models.SessionMember).filter(
+        models.SessionMember.user_id == user_id
+    ).all()]
+
+    # Query for todos where the user is the owner OR the todo belongs to a session the user is a member of and is not private.
+    return db.query(models.Todo).filter(
+        (models.Todo.owner_id == user_id) |
+        ((models.Todo.session_id.in_(member_session_ids)) & (models.Todo.is_private == False))
+    )
+
 def remove_user_from_session(db: Session, session_id: int, user_id: int) -> bool:
     """
     Removes a user from a session and reassigns their public todos in that session to their private session.
@@ -540,29 +594,8 @@ def delete_session(db: Session, session_id: int, owner_id: int):
     if db_session.created_by_id != owner_id:
         raise ValueError("Only the session owner can delete the session.")
 
-    # Reassign public todos from this session to their owners' private sessions
-    todos_to_reassign = db.query(models.Todo).filter(
-        models.Todo.session_id == session_id,
-        models.Todo.is_private == False # Only public todos
-    ).all()
-
-    for todo in todos_to_reassign:
-        # Find the owner's private session
-        owner_private_session = db.query(models.Session).filter(
-            models.Session.created_by_id == todo.owner_id,
-            models.Session.name == None
-        ).first()
-        
-        if not owner_private_session:
-            # This case should ideally not happen if create_user always creates a private session
-            # For robustness, we could delete the todo or raise an error.
-            # For now, we'll reassign to the owner's private session, assuming it exists.
-            print(f"Warning: Private session not found for user {todo.owner_id}. Todo {todo.id} not reassigned.")
-            continue
-
-        todo.session_id = owner_private_session.id
-        todo.is_private = True
-        db.add(todo)
+    # Delete all todos explicitly linked to this session
+    db.query(models.Todo).filter(models.Todo.session_id == session_id).delete(synchronize_session=False)
 
     # Delete all session members
     db.query(models.SessionMember).filter(models.SessionMember.session_id == session_id).delete(synchronize_session=False)
