@@ -1026,3 +1026,121 @@ def test_collaborator_cannot_update_session_name(client: TestClient, db: Session
     found_session = next((s for s in sessions if s["id"] == session_id), None)
     assert found_session
     assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids 

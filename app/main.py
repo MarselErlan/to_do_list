@@ -95,7 +95,7 @@ def create_todo_endpoint(todo: schemas.TodoCreate, db: Session = Depends(get_db)
 
 @app.get("/todos/", response_model=List[schemas.Todo])
 def read_todos_endpoint(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    todos = crud.get_todos_by_user(db, user_id=current_user.id, skip=skip, limit=limit)
+    todos = crud.get_relevant_todos_query(db, user_id=current_user.id).offset(skip).limit(limit).all()
     return todos
 
 # Time Management Endpoints
