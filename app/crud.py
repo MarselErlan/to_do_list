@@ -48,7 +48,71 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    # Create a private session for the new user
+    private_session = models.Session(created_by_id=db_user.id)
+    db.add(private_session)
+    db.commit()
+    db.refresh(private_session)
+
+    # Add the user as the owner of their private session
+    session_member = models.SessionMember(
+        session_id=private_session.id,
+        user_id=db_user.id,
+        role="owner"
+    )
+    db.add(session_member)
+    db.commit()
+
     return db_user
+
+def create_team_session(db: Session, session: schemas.SessionCreate, owner_id: int) -> models.Session:
+    """Creates a new team session and assigns the creator as the owner."""
+    # Create the new session
+    db_session = models.Session(
+        name=session.name,
+        created_by_id=owner_id
+    )
+    db.add(db_session)
+    db.commit()
+    db.refresh(db_session)
+
+    # Add the creator as the owner in session_members
+    member = models.SessionMember(
+        session_id=db_session.id,
+        user_id=owner_id,
+        role="owner"
+    )
+    db.add(member)
+    db.commit()
+
+    return db_session
+
+def invite_user_to_session(db: Session, session_id: int, invitee_email: str) -> models.SessionMember | None:
+    """Adds a user to a session as a collaborator."""
+    # Find the user to invite
+    user_to_invite = get_user_by_email(db, email=invitee_email)
+    if not user_to_invite:
+        return None # User not found
+
+    # Check if the user is already in the session
+    existing_member = db.query(models.SessionMember).filter(
+        models.SessionMember.session_id == session_id,
+        models.SessionMember.user_id == user_to_invite.id
+    ).first()
+    if existing_member:
+        return None # Already a member
+
+    # Add the user to the session
+    new_member = models.SessionMember(
+        session_id=session_id,
+        user_id=user_to_invite.id,
+        role="collaborator"
+    )
+    db.add(new_member)
+    db.commit()
+    db.refresh(new_member)
+    return new_member
 
 def update_user_password(db: Session, user: models.User, new_password: str):
     """Updates a user's password."""
@@ -71,9 +135,34 @@ def get_todos_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100
     return db.query(models.Todo).filter(models.Todo.owner_id == user_id).offset(skip).limit(limit).all()
 
 def create_todo(db: Session, todo: schemas.TodoCreate, owner_id: int):
+    session_id_to_use = todo.session_id
+    is_private = True
+
+    if session_id_to_use:
+        # If a session_id is provided, verify the user is a member.
+        member_check = db.query(models.SessionMember).filter(
+            models.SessionMember.session_id == session_id_to_use,
+            models.SessionMember.user_id == owner_id
+        ).first()
+        if not member_check:
+            raise Exception("User is not a member of the target session.")
+        is_private = False # Todos in team sessions are not private
+    else:
+        # If no session_id, find the user's private session.
+        private_session = db.query(models.Session).filter(
+            models.Session.created_by_id == owner_id,
+            models.Session.name == None
+        ).first()
+        if not private_session:
+            raise Exception("User has no private session.")
+        session_id_to_use = private_session.id
+        is_private = True
+    
     db_todo = models.Todo(
-        **todo.model_dump(),
-        owner_id=owner_id
+        **todo.model_dump(exclude={"session_id"}),
+        owner_id=owner_id,
+        session_id=session_id_to_use,
+        is_private=is_private
     )
     db.add(db_todo)
     db.commit()
@@ -251,5 +340,40 @@ def cleanup_expired_codes(db: Session) -> int:
     db.commit()
     
     return deleted_count
+
+def get_todos_by_session(db: Session, session_id: int, user_id_filter: int | None = None) -> list[models.Todo]:
+    """
+    Gets all todos for a given session.
+    If user_id_filter is provided, it returns only todos created by that user.
+    """
+    query = db.query(models.Todo).filter(
+        models.Todo.session_id == session_id,
+        models.Todo.is_private == False
+    )
+
+    if user_id_filter:
+        query = query.filter(models.Todo.owner_id == user_id_filter)
+
+    return query.all()
+
+def get_sessions_for_user(db: Session, user_id: int):
+    """
+    Gets all sessions a user is a member of, along with their role in each.
+    """
+    return db.query(
+        models.Session.id,
+        models.Session.name,
+        models.SessionMember.role
+    ).join(models.SessionMember).filter(models.SessionMember.user_id == user_id).all()
+
+def get_session_members(db: Session, session_id: int):
+    """
+    Gets all members for a given session, including their username and role.
+    """
+    return db.query(
+        models.SessionMember.user_id,
+        models.User.username,
+        models.SessionMember.role
+    ).join(models.User).filter(models.SessionMember.session_id == session_id).all()
 
  

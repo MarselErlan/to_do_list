@@ -159,6 +159,35 @@ class TestAPISanity:
         assert data["start_time"] == "09:00:00"
         assert data["due_date"] == date.today().isoformat()
 
+    def test_collaboration_endpoints_sanity(self, client: TestClient):
+        """
+        A quick sanity check for the core collaboration endpoints.
+        - Create a session.
+        - Invite a user.
+        - List members.
+        """
+        # 1. Create owner and collaborator
+        owner_data = {"username": "sanity_owner", "email": "sanity_owner@test.com", "password": "p"}
+        c1_data = {"username": "sanity_c1", "email": "sanity_c1@test.com", "password": "p"}
+        client.post("/users/", json=owner_data)
+        client.post("/users/", json=c1_data)
+
+        # 2. Owner logs in and creates a session
+        owner_token = client.post("/token", data={"username": "sanity_owner", "password": "p"}).json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        session_response = client.post("/sessions/", json={"name": "Sanity Team"}, headers=owner_headers)
+        assert session_response.status_code == 200
+        session_id = session_response.json()["id"]
+
+        # 3. Owner invites collaborator
+        invite_response = client.post(f"/sessions/{session_id}/invite", json={"email": "sanity_c1@test.com"}, headers=owner_headers)
+        assert invite_response.status_code == 200
+
+        # 4. Owner lists members
+        members_response = client.get(f"/sessions/{session_id}/members", headers=owner_headers)
+        assert members_response.status_code == 200
+        assert len(members_response.json()) == 2
+
 @pytest.mark.sanity
 @pytest.mark.live
 class TestLiveAPISanity:
