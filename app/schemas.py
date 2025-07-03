@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
-from datetime import date, time
+from datetime import date, time, datetime
 from pydantic import EmailStr
 
 # Todo Schemas
@@ -15,6 +15,7 @@ class TodoBase(BaseModel):
 
 class TodoCreate(TodoBase):
     done: bool = False
+    session_id: Optional[int] = None
 
 class TodoUpdate(BaseModel):
     title: Optional[str] = None
@@ -25,11 +26,15 @@ class TodoUpdate(BaseModel):
     end_date: Optional[date] = None
     end_time: Optional[time] = None
     due_date: Optional[date] = None
+    session_id: Optional[int] = None
 
 class Todo(TodoBase):
     id: int
     done: bool
     owner_id: int
+    created_at: datetime
+    is_private: bool
+    session_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -79,4 +84,53 @@ class UsernameResponse(BaseModel):
 class PasswordReset(BaseModel):
     email: EmailStr
     code: str
-    new_password: str 
+    new_password: str
+
+# --- Session Schemas ---
+
+class SessionBase(BaseModel):
+    name: str
+
+class SessionCreate(SessionBase):
+    pass
+
+class Session(SessionBase):
+    id: int
+    created_by_id: int
+
+    class Config:
+        from_attributes = True
+
+class UserSession(BaseModel):
+    id: int
+    name: str | None
+    role: str
+
+    class Config:
+        from_attributes = True
+
+class SessionMember(BaseModel):
+    user_id: int
+    username: str
+    role: str
+
+    class Config:
+        from_attributes = True
+
+class SessionInvite(BaseModel):
+    email: EmailStr
+
+# --- User Schemas ---
+class UserBase(BaseModel):
+    username: str
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = None
+
+class UserCreate(UserBase):
+    password: str
+
+class User(UserBase):
+    id: int
+    is_active: bool
+    todos: List["Todo"] = []
+    model_config = ConfigDict(from_attributes=True) 

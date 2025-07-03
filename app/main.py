@@ -87,7 +87,11 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 @app.post("/todos/", response_model=schemas.Todo)
 def create_todo_endpoint(todo: schemas.TodoCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return crud.create_todo(db=db, todo=todo, owner_id=current_user.id)
+    try:
+        return crud.create_todo(db=db, todo=todo, owner_id=current_user.id)
+    except Exception as e:
+        # Catches the "User is not a member" exception from the CRUD function
+        raise HTTPException(status_code=403, detail=str(e))
 
 @app.get("/todos/", response_model=List[schemas.Todo])
 def read_todos_endpoint(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -154,6 +158,92 @@ def delete_todo_endpoint(todo_id: int, db: Session = Depends(get_db), current_us
 
     db_todo = crud.delete_todo(db, todo_id=todo_id)
     return db_todo
+
+# --- Session Endpoints ---
+
+@app.post("/sessions/", response_model=schemas.Session)
+def create_team_session_endpoint(
+    session: schemas.SessionCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Create a new team session. The current user becomes the owner."""
+    return crud.create_team_session(db=db, session=session, owner_id=current_user.id)
+
+@app.get("/sessions/", response_model=List[schemas.UserSession])
+def get_user_sessions_endpoint(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get all sessions the current user is a member of."""
+    return crud.get_sessions_for_user(db, user_id=current_user.id)
+
+@app.post("/sessions/{session_id}/invite")
+def invite_user_to_session_endpoint(
+    session_id: int,
+    invite_data: schemas.SessionInvite,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Invite a user to a team session. Only the session owner can invite."""
+    # 1. Verify the session exists
+    db_session = db.query(models.Session).filter(models.Session.id == session_id).first()
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 2. Verify the current user is the owner of the session
+    if db_session.created_by_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the session owner can invite users")
+
+    # 3. Invite the user
+    new_member = crud.invite_user_to_session(db, session_id=session_id, invitee_email=invite_data.email)
+    if not new_member:
+        raise HTTPException(status_code=400, detail="User not found or is already a member of this session")
+
+    return {"message": "User invited successfully"}
+
+@app.get("/sessions/{session_id}/todos", response_model=List[schemas.Todo])
+def get_session_todos_endpoint(
+    session_id: int,
+    user_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Get all todos for a specific session.
+    Only members of the session can access this.
+    A user_id can be provided to filter todos by a specific creator.
+    """
+    # 1. Verify user is a member of the session
+    member_check = db.query(models.SessionMember).filter(
+        models.SessionMember.session_id == session_id,
+        models.SessionMember.user_id == current_user.id
+    ).first()
+    if not member_check:
+        raise HTTPException(status_code=403, detail="User is not a member of this session")
+
+    # 2. Get the todos
+    return crud.get_todos_by_session(db, session_id=session_id, user_id_filter=user_id)
+
+@app.get("/sessions/{session_id}/members", response_model=List[schemas.SessionMember])
+def get_session_members_endpoint(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Get all members of a specific session.
+    Only members of the session can access this.
+    """
+    # Verify user is a member of the session
+    member_check = db.query(models.SessionMember).filter(
+        models.SessionMember.session_id == session_id,
+        models.SessionMember.user_id == current_user.id
+    ).first()
+    if not member_check:
+        raise HTTPException(status_code=403, detail="User is not a member of this session")
+
+    return crud.get_session_members(db, session_id=session_id)
 
 # --- User Endpoints ---
 

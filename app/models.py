@@ -15,6 +15,8 @@ class User(Base):
     is_active = Column(Boolean, default=True)
 
     todos = relationship("Todo", back_populates="owner")
+    sessions = relationship("SessionMember", back_populates="user")
+
 
 class Todo(Base):
     __tablename__ = "todos"
@@ -33,6 +35,37 @@ class Todo(Base):
 
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="todos")
+
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=True)
+    session = relationship("Session", back_populates="todos")
+    is_private = Column(Boolean, default=True, nullable=False)
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=True) # Name for team sessions
+    created_by_id = Column("created_by", Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    creator = relationship("User")
+    members = relationship("SessionMember", back_populates="session")
+    todos = relationship("Todo", back_populates="session")
+
+
+class SessionMember(Base):
+    __tablename__ = "session_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    role = Column(String, default='collaborator', nullable=False) # owner, collaborator
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    session = relationship("Session", back_populates="members")
+    user = relationship("User", back_populates="sessions")
+
 
 class EmailVerification(Base):
     __tablename__ = "email_verifications"
