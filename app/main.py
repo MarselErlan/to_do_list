@@ -365,6 +365,20 @@ def forgot_username(request: schemas.EmailVerificationRequest, db: Session = Dep
         )
     return {"username": user.username}
 
+@app.delete("/users/me")
+def delete_current_user(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Allows an authenticated user to delete their own account and all associated data.
+    """
+    try:
+        crud.delete_user(db, current_user.id)
+        return {"message": "User and associated data deleted successfully."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 # --- Email Verification Endpoints ---
 
 @app.post("/auth/request-verification", response_model=schemas.VerificationRequestResponse)
