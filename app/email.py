@@ -13,7 +13,8 @@ conf = ConnectionConfig(
     MAIL_STARTTLS=settings.mail_starttls,
     MAIL_SSL_TLS=settings.mail_ssl_tls,
     USE_CREDENTIALS=True,
-    VALIDATE_CERTS=True
+    VALIDATE_CERTS=True,
+    SUPPRESS_SEND=settings.suppress_send
 )
 
 async def send_verification_email(email_to: EmailStr, code: str):

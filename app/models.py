@@ -74,5 +74,6 @@ class EmailVerification(Base):
     email = Column(String, unique=True, index=True)
     code = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(minutes=5))
+    expires_at = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(hours=5))
+    attempts = Column(Integer, default=1, nullable=False)
     verified = Column(Boolean, default=False) 

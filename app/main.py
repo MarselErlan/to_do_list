@@ -144,9 +144,12 @@ def update_todo_endpoint(
         raise HTTPException(status_code=404, detail="Todo not found")
     if db_todo.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    db_todo = crud.update_todo(db, todo_id=todo_id, todo=todo)
-    return db_todo
+
+    try:
+        updated_todo = crud.update_todo(db, todo_id=todo_id, todo=todo, owner_id=current_user.id)
+        return updated_todo
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 @app.delete("/todos/{todo_id}", response_model=schemas.Todo)
 def delete_todo_endpoint(todo_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -214,7 +217,12 @@ def get_session_todos_endpoint(
     Only members of the session can access this.
     A user_id can be provided to filter todos by a specific creator.
     """
-    # 1. Verify user is a member of the session
+    # 1. Verify the session exists
+    db_session = db.query(models.Session).filter(models.Session.id == session_id).first()
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 2. Verify user is a member of the session
     member_check = db.query(models.SessionMember).filter(
         models.SessionMember.session_id == session_id,
         models.SessionMember.user_id == current_user.id
@@ -222,7 +230,7 @@ def get_session_todos_endpoint(
     if not member_check:
         raise HTTPException(status_code=403, detail="User is not a member of this session")
 
-    # 2. Get the todos
+    # 3. Get the todos
     return crud.get_todos_by_session(db, session_id=session_id, user_id_filter=user_id)
 
 @app.get("/sessions/{session_id}/members", response_model=List[schemas.SessionMember])
@@ -235,7 +243,12 @@ def get_session_members_endpoint(
     Get all members of a specific session.
     Only members of the session can access this.
     """
-    # Verify user is a member of the session
+    # 1. Verify the session exists
+    db_session = db.query(models.Session).filter(models.Session.id == session_id).first()
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 2. Verify user is a member of the session
     member_check = db.query(models.SessionMember).filter(
         models.SessionMember.session_id == session_id,
         models.SessionMember.user_id == current_user.id
@@ -244,6 +257,77 @@ def get_session_members_endpoint(
         raise HTTPException(status_code=403, detail="User is not a member of this session")
 
     return crud.get_session_members(db, session_id=session_id)
+
+@app.put("/sessions/{session_id}", response_model=schemas.Session)
+def update_session_endpoint(
+    session_id: int,
+    session_update: schemas.SessionUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Allows the session owner to update a session's metadata.
+    """
+    try:
+        updated_session = crud.update_session(db, session_id, session_update, current_user.id)
+        return updated_session
+    except ValueError as e:
+        if "Only the session owner can update the session." in str(e):
+            raise HTTPException(status_code=403, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/sessions/{session_id}/members/me")
+def leave_session_endpoint(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Allows a user to leave a team session. If the user is the owner, the session will be deleted.
+    """
+    try:
+        session_deleted = crud.remove_user_from_session(db, session_id, current_user.id)
+        if session_deleted:
+            return {"message": f"Session {session_id} deleted successfully."}
+        else:
+            return {"message": f"Successfully left session {session_id}"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/sessions/{session_id}/members/{member_user_id}")
+def remove_session_member_endpoint(
+    session_id: int,
+    member_user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Allows the session owner to remove a specific member from a team session.
+    The removed member's public todos will be reassigned to their private session.
+    """
+    try:
+        crud.remove_session_member(db, session_id, member_user_id, current_user.id)
+        return {"message": "Successfully left session"}
+    except ValueError as e:
+        if "Only the session owner can remove members" in str(e):
+            raise HTTPException(status_code=403, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/sessions/{session_id}")
+def delete_session_endpoint(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Allows the owner to delete a team session.
+    Public todos in the session will be reassigned to their owners' private sessions.
+    """
+    try:
+        crud.delete_session(db, session_id, current_user.id)
+        return {"message": f"Session {session_id} deleted successfully."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # --- User Endpoints ---
 
@@ -283,25 +367,28 @@ def forgot_username(request: schemas.EmailVerificationRequest, db: Session = Dep
 
 # --- Email Verification Endpoints ---
 
-@app.post("/auth/request-verification")
+@app.post("/auth/request-verification", response_model=schemas.VerificationRequestResponse)
 async def request_verification_code(
     request: schemas.EmailVerificationRequest, 
     db: Session = Depends(get_db)
 ):
-    """
-    Request a verification code for an email address.
-    This will generate a code, save it, and email it.
-    """
     # Check if user already exists
     db_user = crud.get_user_by_email(db, email=request.email)
     if db_user:
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
 
-    code = crud.create_verification_code(db, email=request.email)
-    
-    await send_verification_email(email_to=request.email, code=code)
-    
-    return {"message": "Verification code sent successfully"}
+    # Create or update the verification code and get attempts left
+    plain_code, attempts_left = crud.create_verification_code(db, email=request.email)
+
+    if plain_code is None:
+        # This means the attempt limit has been reached
+        raise HTTPException(
+            status_code=429, 
+            detail=f"Too many verification attempts. Please wait 5 hours before trying again."
+        )
+
+    await send_verification_email(email_to=request.email, code=plain_code)
+    return {"message": "Verification code sent successfully", "attempts_left": attempts_left}
 
 @app.post("/auth/forgot-password", response_model=schemas.PasswordResetRequestResponse)
 async def forgot_password(

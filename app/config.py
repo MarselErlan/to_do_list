@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     mail_server: str
     mail_starttls: bool
     mail_ssl_tls: bool
+    use_credentials: bool = True
+    validate_certs: bool = True
+    template_folder: str = "app/email_templates"
+    suppress_send: bool = True
 
     model_config = SettingsConfigDict(env_file=".env")
 

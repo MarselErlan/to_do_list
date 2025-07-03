@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from datetime import date, time, datetime
 from pydantic import EmailStr
@@ -69,7 +69,7 @@ class EmailVerificationCode(BaseModel):
     code: str
 
 class UserCreateAndVerify(UserCreate):
-    code: str
+    code: str = Field(..., alias="verification_code")
 
 class PasswordResetRequestResponse(BaseModel):
     message: str
@@ -93,6 +93,9 @@ class SessionBase(BaseModel):
 
 class SessionCreate(SessionBase):
     pass
+
+class SessionUpdate(BaseModel):
+    name: Optional[str] = None
 
 class Session(SessionBase):
     id: int
@@ -133,4 +136,11 @@ class User(UserBase):
     id: int
     is_active: bool
     todos: List["Todo"] = []
-    model_config = ConfigDict(from_attributes=True) 
+    model_config = ConfigDict(from_attributes=True)
+
+class MessageResponse(BaseModel):
+    message: str
+
+class VerificationRequestResponse(BaseModel):
+    message: str
+    attempts_left: int 
