@@ -39,10 +39,11 @@ def test_update_todo(db: Session):
     
     # Now, update it
     update_data = schemas.TodoUpdate(title="Updated Title", done=True)
-    updated_todo = crud.update_todo(db=db, todo_id=db_todo.id, todo=update_data)
+    updated_todo = crud.update_todo(db=db, todo_id=db_todo.id, todo=update_data, owner_id=db_user.id)
     
     assert updated_todo is not None
     assert updated_todo.title == "Updated Title"
     assert updated_todo.done is True
     assert updated_todo.id == db_todo.id
-    assert updated_todo.owner_id == db_user.id 
+    assert updated_todo.owner_id == db_user.id
+    assert updated_todo.description == "Original Description" 

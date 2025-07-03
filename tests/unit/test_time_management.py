@@ -123,7 +123,7 @@ def test_update_todo_with_time_fields(db: Session):
         start_date=date(2025, 1, 1),
         start_time=time(14, 30)
     )
-    updated_todo = crud.update_todo(db=db, todo_id=db_todo.id, todo=update_data)
+    updated_todo = crud.update_todo(db=db, todo_id=db_todo.id, todo=update_data, owner_id=db_user.id)
     assert updated_todo.start_date == date(2025, 1, 1)
     assert updated_todo.start_time == time(14, 30)
 

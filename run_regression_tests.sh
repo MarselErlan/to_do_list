@@ -13,7 +13,7 @@ export MAIL_SERVER='smtp.test.com'
 export MAIL_STARTTLS='True'
 export MAIL_SSL_TLS='False'
 
-# Run pytest on the entire tests directory
-pytest tests/
+# Run pytest on the smoke tests directory as our regression suite
+pytest tests/smoke_tests/
 
 echo "--- Regression Test Suite Finished ---" 

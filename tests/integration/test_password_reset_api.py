@@ -81,7 +81,7 @@ def test_reset_password_success(client, db):
     new_password = "new_password"
     
     crud.create_user(db, UserCreate(username=username, email=email, password=old_password))
-    code = crud.create_verification_code(db, email=email)
+    code, _ = crud.create_verification_code(db, email=email)
 
     # 2. Action: Reset the password
     response = client.post(
