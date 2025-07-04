@@ -167,7 +167,21 @@ def get_todos_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100
 
 def create_todo(db: Session, todo: schemas.TodoCreate, owner_id: int):
     session_id_to_use = todo.session_id
-    is_private = True
+    is_global_public = todo.is_global_public if todo.is_global_public is not None else False
+    
+    if is_global_public:
+        # If globally public, it cannot be private or associated with a specific session
+        is_private = False
+        session_id_to_use = None # Global public todos are not tied to any specific session_id
+    elif todo.is_private is not None:
+        # If explicitly provided, use the provided value for is_private
+        is_private = todo.is_private
+    elif session_id_to_use:
+        # If a session_id is provided and is_private is NOT explicitly set, default to public (False) for team session
+        is_private = False
+    else:
+        # If no session_id and is_private is NOT explicitly set, default to private (True) for personal session
+        is_private = True
 
     if session_id_to_use:
         # If a session_id is provided, verify the user is a member.
@@ -177,9 +191,9 @@ def create_todo(db: Session, todo: schemas.TodoCreate, owner_id: int):
         ).first()
         if not member_check:
             raise Exception("User is not a member of the target session.")
-        is_private = False # Todos in team sessions are not private
+
     else:
-        # If no session_id, find the user's private session.
+        # If no session_id, ensure it goes to the user's private session.
         private_session = db.query(models.Session).filter(
             models.Session.created_by_id == owner_id,
             models.Session.name == None
@@ -187,13 +201,16 @@ def create_todo(db: Session, todo: schemas.TodoCreate, owner_id: int):
         if not private_session:
             raise Exception("User has no private session.")
         session_id_to_use = private_session.id
-        is_private = True
-    
+        # If is_global_public is False, then it's a private todo in the personal session
+        if not is_global_public: # Ensure it's not a global public todo being put in private session
+            is_private = True
+
     db_todo = models.Todo(
-        **todo.model_dump(exclude={"session_id"}),
+        **todo.model_dump(exclude={"session_id", "is_private", "is_global_public"}), # Exclude these as they are determined here
         owner_id=owner_id,
         session_id=session_id_to_use,
-        is_private=is_private
+        is_private=is_private,
+        is_global_public=is_global_public
     )
     db.add(db_todo)
     db.commit()
@@ -443,18 +460,33 @@ def cleanup_expired_codes(db: Session) -> int:
     
     return deleted_count
 
-def get_todos_by_session(db: Session, session_id: int, user_id_filter: int | None = None) -> list[models.Todo]:
+def get_todos_by_session(db: Session, session_id: int, requesting_user_id: int | None = None, filter_by_owner_id: int | None = None) -> list[models.Todo]:
     """
-    Gets all todos for a given session.
-    If user_id_filter is provided, it returns only todos created by that user.
+    Gets all todos for a given session, visible to the requesting user.
+    A requesting_user_id can be provided to filter todos.
+    - Public todos in the session are always visible to members.
+    - Private todos in the session are only visible to their owner.
+    - If filter_by_owner_id is provided, only todos by that owner are returned, respecting privacy.
     """
     query = db.query(models.Todo).filter(
-        models.Todo.session_id == session_id,
-        models.Todo.is_private == False
+        models.Todo.session_id == session_id
     )
 
-    if user_id_filter:
-        query = query.filter(models.Todo.owner_id == user_id_filter)
+    if filter_by_owner_id:
+        # If filtering by a specific owner, only show their todos in this session
+        query = query.filter(models.Todo.owner_id == filter_by_owner_id)
+        # If the requesting user is NOT the owner being filtered, only show public todos of that owner
+        if requesting_user_id and filter_by_owner_id != requesting_user_id:
+            query = query.filter(models.Todo.is_private == False)
+    else:
+        # If no owner filter, apply general visibility rules for the requesting user
+        if requesting_user_id:
+            query = query.filter(
+                (models.Todo.is_private == False) | (models.Todo.owner_id == requesting_user_id)
+            )
+        else:
+            # If no requesting user and no owner filter, only show public todos in this session
+            query = query.filter(models.Todo.is_private == False)
 
     return query.all()
 
@@ -515,7 +547,8 @@ def get_relevant_todos_query(db: Session, user_id: int):
     # Query for todos where the user is the owner OR the todo belongs to a session the user is a member of and is not private.
     return db.query(models.Todo).filter(
         (models.Todo.owner_id == user_id) |
-        ((models.Todo.session_id.in_(member_session_ids)) & (models.Todo.is_private == False))
+        ((models.Todo.session_id.in_(member_session_ids)) & (models.Todo.is_private == False)) |
+        (models.Todo.is_global_public == True)
     )
 
 def remove_user_from_session(db: Session, session_id: int, user_id: int) -> bool:

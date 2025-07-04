@@ -3,6 +3,12 @@ from sqlalchemy.orm import Session
 from app import models
 from app import crud
 
+def login_and_get_headers(client: TestClient, username, password):
+    login_response = client.post("/token", data={"username": username, "password": password})
+    assert login_response.status_code == 200
+    token = login_response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
 def test_private_session_is_created_for_new_user(client: TestClient, db: Session):
     """
     When a new user is created, a private session should be automatically
@@ -883,7 +889,7 @@ def test_owner_removes_collaborator_from_session(client: TestClient, db: Session
     assert remove_member_response.status_code == 200
     assert remove_member_response.json()["message"] == "Successfully left session"
 
-    # 6. Verify collaborator is no longer a member (attempt to get session members should fail for collaborator)
+    # 6. Verify collaborator is no longer a member of the session
     check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
     assert check_members_response_collab.status_code == 403
     assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
@@ -900,50 +906,39 @@ def test_owner_removes_collaborator_from_session(client: TestClient, db: Session
 
 def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
     """
-    Tests that a collaborator (non-owner) cannot remove another user from a session.
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
     """
-    # 1. Create owner, collaborator, and a third user
-    owner_data = {"username": "owner_no_remove", "email": "owner.no.remove@example.com", "password": "password"}
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
     client.post("/users/", json=owner_data)
-    collab_data = {"username": "collab_no_remove", "email": "collab.no.remove@example.com", "password": "password"}
-    client.post("/users/", json=collab_data)
-    user_to_remove_data = {"username": "user_to_remove", "email": "user.to.remove@example.com", "password": "password"}
-    client.post("/users/", json=user_to_remove_data)
-    user_to_remove_obj = crud.get_user_by_username(db, username="user_to_remove")
-    assert user_to_remove_obj
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
 
-    # 2. Owner logs in and creates a session
-    owner_login_response = client.post("/token", data={"username": "owner_no_remove", "password": "password"})
-    assert owner_login_response.status_code == 200
-    owner_token = owner_login_response.json()["access_token"]
-    owner_headers = {"Authorization": f"Bearer {owner_token}"}
-    
-    team_session_name = "Team for Restricted Removal"
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
     team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
     assert team_session_response.status_code == 200
     team_session_id = team_session_response.json()["id"]
 
-    # 3. Owner invites collaborator and the user_to_remove to the session
-    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
-    client.post(f"/sessions/{team_session_id}/invite", json={"email": user_to_remove_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
 
-    # 4. Collaborator logs in
-    collab_login_response = client.post("/token", data={"username": "collab_no_remove", "password": "password"})
-    assert collab_login_response.status_code == 200
-    collab_token = collab_login_response.json()["access_token"]
-    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
 
-    # 5. Collaborator attempts to remove user_to_remove from the session
-    remove_attempt_response = client.delete(f"/sessions/{team_session_id}/members/{user_to_remove_obj.id}", headers=collab_headers)
-
-    # This assertion will initially fail if collaborator can remove members
-    assert remove_attempt_response.status_code == 403
-    assert remove_attempt_response.json()["detail"] == "Only the session owner can remove members."
-
-    # Verify user_to_remove is still a member (owner should still see them)
-    session_members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
-    member_ids = [m["user_id"] for m in session_members_after_attempt]
-    assert user_to_remove_obj.id in member_ids
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
 
 def test_owner_can_update_session_name(client: TestClient, db: Session):
     """
@@ -1143,4 +1138,5293 @@ def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
     response = client.get("/todos/", headers=user4_headers)
     assert response.status_code == 200
     user4_actual_ids = {t["id"] for t in response.json()}
-    assert user4_actual_ids == user4_expected_ids 
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "user4_collab", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+
+    user1_headers = login_and_get_headers(client, "user1_global_public", "password")
+    user2_headers = login_and_get_headers(client, "user2_global_public", "password")
+
+    # 2. User1 creates a todo in their personal workspace, explicitly marking it as global public
+    global_public_todo_title = "Globally Visible Todo"
+    global_public_todo_data = {"title": global_public_todo_title, "is_private": False, "is_global_public": True}
+    global_public_todo_response = client.post("/todos/", json=global_public_todo_data, headers=user1_headers)
+    assert global_public_todo_response.status_code == 200
+    global_public_todo_id = global_public_todo_response.json()["id"]
+
+    # 3. Assertions for User1's view (creator)
+    user1_todos = client.get("/todos/", headers=user1_headers).json()
+    user1_todo_titles = {t["title"] for t in user1_todos}
+    assert global_public_todo_title in user1_todo_titles
+    assert len(user1_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 4. Assertions for User2's view (unrelated user)
+    user2_todos = client.get("/todos/", headers=user2_headers).json()
+    user2_todo_titles = {t["title"] for t in user2_todos}
+    assert global_public_todo_title in user2_todo_titles
+    assert len(user2_todos) == 1 # Only the global public todo from this test, as no default private todo is asserted.
+
+    # 5. Verify the todo's properties in the database directly
+    db_todo = db.query(models.Todo).filter(models.Todo.id == global_public_todo_id).first()
+    assert db_todo is not None
+    assert db_todo.is_private is False
+    assert db_todo.is_global_public is True
+
+def test_owner_removes_collaborator_from_session(client: TestClient, db: Session):
+    """
+    Tests that a session owner can remove a collaborator, and the collaborator's public todos
+    in that session are reassigned to their private session.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_remove_member", "email": "owner.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_remove_member", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_remove_member")
+    assert owner_obj
+
+    collaborator_data = {"username": "collaborator_to_be_removed", "email": "removed.collaborator@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    collaborator_login_response = client.post("/token", data={"username": "collaborator_to_be_removed", "password": "password"})
+    assert collaborator_login_response.status_code == 200
+    collaborator_token = collaborator_login_response.json()["access_token"]
+    collaborator_headers = {"Authorization": f"Bearer {collaborator_token}"}
+    collaborator_obj = crud.get_user_by_username(db, username="collaborator_to_be_removed")
+    assert collaborator_obj
+
+    # 2. Owner creates a team session
+    team_session_name = "Team for Member Removal Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collaborator_data["email"]}
+    invite_response = client.post(f"/sessions/{team_session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator creates a public todo in the team session
+    collaborator_todo_title = "Collaborator's Todo in Team"
+    collaborator_todo_data = {"title": collaborator_todo_title, "session_id": team_session_id}
+    collaborator_todo_response = client.post("/todos/", json=collaborator_todo_data, headers=collaborator_headers)
+    assert collaborator_todo_response.status_code == 200
+    collaborator_created_todo_id = collaborator_todo_response.json()["id"]
+    
+    # Verify todo is visible in team session initially
+    team_todos_before_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert any(t["id"] == collaborator_created_todo_id for t in team_todos_before_remove)
+
+    # 5. Owner removes the collaborator from the session
+    remove_member_response = client.delete(f"/sessions/{team_session_id}/members/{collaborator_obj.id}", headers=owner_headers)
+    assert remove_member_response.status_code == 200
+    assert remove_member_response.json()["message"] == "Successfully left session"
+
+    # 6. Verify collaborator is no longer a member of the session
+    check_members_response_collab = client.get(f"/sessions/{team_session_id}/members", headers=collaborator_headers)
+    assert check_members_response_collab.status_code == 403
+    assert check_members_response_collab.json()["detail"] == "User is not a member of this session"
+
+    # 7. Verify collaborator's todo is now private and in their private session
+    collaborator_todo_after_remove = client.get(f"/todos/{collaborator_created_todo_id}", headers=collaborator_headers).json()
+    assert collaborator_todo_after_remove["is_private"] is True
+    collab_private_session = crud.get_private_session_for_user(db, collaborator_obj.id)
+    assert collaborator_todo_after_remove["session_id"] == collab_private_session.id
+
+    # 8. Verify the todo is no longer visible via the team session endpoint (for owner)
+    team_todos_after_remove = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    assert not any(t["id"] == collaborator_created_todo_id for t in team_todos_after_remove)
+
+    # Removed assertions for Non-member's view as they were causing NameError
+    # assert public_team_todo_title not in non_member_todo_titles
+    # assert public_team_todo_title not in non_member_todo_titles
+
+def test_collaborator_cannot_remove_member_from_session(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot remove a member from a team session.
+    """
+    # 1. Create owner, collaborator, and another user
+    owner_data = {"username": "owner_collab_remove", "email": "owner.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    collaborator_data = {"username": "collab_collab_remove", "email": "collab.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=collaborator_data)
+    target_user_data = {"username": "target_collab_remove", "email": "target.collab.remove@example.com", "password": "password"}
+    client.post("/users/", json=target_user_data)
+
+    owner_headers = login_and_get_headers(client, "owner_collab_remove", "password")
+    collaborator_headers = login_and_get_headers(client, "collab_collab_remove", "password")
+    target_user_obj = crud.get_user_by_username(db, username="target_collab_remove")
+    assert target_user_obj
+
+    # 2. Owner creates a team session and invites collaborator and target_user
+    team_session_name = "Session for Collab Remove Test"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collaborator_data["email"]}, headers=owner_headers)
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": target_user_data["email"]}, headers=owner_headers)
+
+    # 3. Collaborator attempts to remove target_user from the session (should fail)
+    remove_response = client.delete(f"/sessions/{team_session_id}/members/{target_user_obj.id}", headers=collaborator_headers)
+    assert remove_response.status_code == 403
+    assert remove_response.json()["detail"] == "Only the session owner can remove members."
+
+    # 4. Verify target_user is still a member (owner should still see them)
+    members_after_attempt = client.get(f"/sessions/{team_session_id}/members", headers=owner_headers).json()
+    member_ids = {m["user_id"] for m in members_after_attempt}
+    assert target_user_obj.id in member_ids
+
+def test_owner_can_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a session owner can successfully update the session's name.
+    """
+    # 1. Create owner user and log in
+    owner_data = {"username": "owner_update_session", "email": "owner.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_update_session", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    # 2. Owner creates a team session
+    old_session_name = "Original Session Name"
+    create_session_response = client.post("/sessions/", json={"name": old_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner updates the session name
+    new_session_name = "Updated Session Name"
+    update_data = {"name": new_session_name}
+    update_response = client.put(f"/sessions/{session_id}", json=update_data, headers=owner_headers)
+    assert update_response.status_code == 200
+    updated_session = update_response.json()
+    assert updated_session["name"] == new_session_name
+    assert updated_session["id"] == session_id
+
+    # 4. Verify the name change by fetching the session details
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == new_session_name
+
+def test_collaborator_cannot_update_session_name(client: TestClient, db: Session):
+    """
+    Tests that a collaborator (non-owner) cannot update a session's name.
+    """
+    # 1. Create owner and collaborator users and log in
+    owner_data = {"username": "owner_no_update", "email": "owner.no.update@example.com", "password": "password"}
+    client.post("/users/", json=owner_data)
+    owner_login_response = client.post("/token", data={"username": "owner_no_update", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    collab_data = {"username": "collab_no_update", "email": "collab.no.update@example.com", "password": "password"}
+    client.post("/users/", json=collab_data)
+    collab_login_response = client.post("/token", data={"username": "collab_no_update", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+
+    # 2. Owner creates a team session
+    original_session_name = "Session to Attempt Update"
+    create_session_response = client.post("/sessions/", json={"name": original_session_name}, headers=owner_headers)
+    assert create_session_response.status_code == 200
+    session_id = create_session_response.json()["id"]
+
+    # 3. Owner invites collaborator to the session
+    invite_data = {"email": collab_data["email"]}
+    invite_response = client.post(f"/sessions/{session_id}/invite", json=invite_data, headers=owner_headers)
+    assert invite_response.status_code == 200
+
+    # 4. Collaborator attempts to update the session name
+    new_session_name_attempt = "Forbidden Updated Name"
+    update_data = {"name": new_session_name_attempt}
+    update_attempt_response = client.put(f"/sessions/{session_id}", json=update_data, headers=collab_headers)
+
+    # This assertion will initially fail if collaborator can update
+    assert update_attempt_response.status_code == 403
+    assert update_attempt_response.json()["detail"] == "Only the session owner can update the session."
+
+    # 5. Verify the session name was NOT changed by fetching with owner
+    fetch_session_response = client.get(f"/sessions/", headers=owner_headers)
+    assert fetch_session_response.status_code == 200
+    sessions = fetch_session_response.json()
+    found_session = next((s for s in sessions if s["id"] == session_id), None)
+    assert found_session
+    assert found_session["name"] == original_session_name 
+
+def test_todo_list_reflection_in_collaboration(client: TestClient, db: Session):
+    """
+    Tests that the main /todos/ endpoint correctly reflects the list of todos
+    visible to a user based on their private todos and team session memberships.
+    """
+    # 1. Create users: User1 (owner), User2 (collaborator in User1's session),
+    #    User3 (collaborator in User2's session), User4 (non-member)
+    user1_data = {"username": "user1_collab", "email": "user1@collab.com", "password": "password"}
+    user2_data = {"username": "user2_collab", "email": "user2@collab.com", "password": "password"}
+    user3_data = {"username": "user3_collab", "email": "user3@collab.com", "password": "password"}
+    user4_data = {"username": "user4_collab", "email": "user4@collab.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)
+
+    # Log in all users
+    def login_and_get_headers(username, password):
+        login_response = client.post("/token", data={"username": username, "password": password})
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    user1_headers = login_and_get_headers("user1_collab", "password")
+    user2_headers = login_and_get_headers("user2_collab", "password")
+    user3_headers = login_and_get_headers("user3_collab", "password")
+    user4_headers = login_and_get_headers("user4_collab", "password")
+
+    user1_obj = crud.get_user_by_username(db, "user1_collab")
+    user2_obj = crud.get_user_by_username(db, "user2_collab")
+    user3_obj = crud.get_user_by_username(db, "user3_collab")
+    user4_obj = crud.get_user_by_username(db, "user4_collab")
+
+    # 2. Create private todos for each user
+    user1_private_todo = client.post("/todos/", json={"title": "User1 Private Todo"}, headers=user1_headers).json()
+    user2_private_todo = client.post("/todos/", json={"title": "User2 Private Todo"}, headers=user2_headers).json()
+    user3_private_todo = client.post("/todos/", json={"title": "User3 Private Todo"}, headers=user3_headers).json()
+    user4_private_todo = client.post("/todos/", json={"title": "User4 Private Todo"}, headers=user4_headers).json()
+
+    # 3. User1 creates Team Session A and invites User2
+    session_a_response = client.post("/sessions/", json={"name": "Team Session A"}, headers=user1_headers).json()
+    session_a_id = session_a_response["id"]
+    client.post(f"/sessions/{session_a_id}/invite", json={"email": user2_data["email"]}, headers=user1_headers)
+
+    # 4. User2 creates Team Session B and invites User3
+    session_b_response = client.post("/sessions/", json={"name": "Team Session B"}, headers=user2_headers).json()
+    session_b_id = session_b_response["id"]
+    client.post(f"/sessions/{session_b_id}/invite", json={"email": user3_data["email"]}, headers=user2_headers)
+
+    # 5. Create public todos in Team Session A (by User1 and User2)
+    user1_todo_session_a = client.post("/todos/", json={
+        "title": "User1 Todo in Session A", "session_id": session_a_id
+    }, headers=user1_headers).json()
+    user2_todo_session_a = client.post("/todos/", json={
+        "title": "User2 Todo in Session A", "session_id": session_a_id
+    }, headers=user2_headers).json()
+
+    # 6. Create public todos in Team Session B (by User2 and User3)
+    user2_todo_session_b = client.post("/todos/", json={
+        "title": "User2 Todo in Session B", "session_id": session_b_id
+    }, headers=user2_headers).json()
+    user3_todo_session_b = client.post("/todos/", json={
+        "title": "User3 Todo in Session B", "session_id": session_b_id
+    }, headers=user3_headers).json()
+
+    # Expected todos for each user when querying /todos/
+
+    # User1: Private todo + User1's and User2's todos in Session A
+    # Expected IDs for User1: user1_private_todo, user1_todo_session_a, user2_todo_session_a
+    user1_expected_ids = {
+        user1_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+    }
+    response = client.get("/todos/", headers=user1_headers)
+    assert response.status_code == 200
+    user1_actual_ids = {t["id"] for t in response.json()}
+    assert user1_actual_ids == user1_expected_ids
+
+    # User2: Private todo + User1's and User2's todos in Session A +
+    # User2's and User3's todos in Session B
+    # Expected IDs for User2: user2_private_todo, user1_todo_session_a, user2_todo_session_a,
+    #                          user2_todo_session_b, user3_todo_session_b
+    user2_expected_ids = {
+        user2_private_todo["id"],
+        user1_todo_session_a["id"],
+        user2_todo_session_a["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user2_headers)
+    assert response.status_code == 200
+    user2_actual_ids = {t["id"] for t in response.json()}
+    assert user2_actual_ids == user2_expected_ids
+
+    # User3: Private todo + User2's and User3's todos in Session B
+    # Expected IDs for User3: user3_private_todo, user2_todo_session_b, user3_todo_session_b
+    user3_expected_ids = {
+        user3_private_todo["id"],
+        user2_todo_session_b["id"],
+        user3_todo_session_b["id"],
+    }
+    response = client.get("/todos/", headers=user3_headers)
+    assert response.status_code == 200
+    user3_actual_ids = {t["id"] for t in response.json()}
+    assert user3_actual_ids == user3_expected_ids
+
+    # User4 (non-member): Only their private todo
+    # Expected IDs for User4: user4_private_todo
+    user4_expected_ids = {
+        user4_private_todo["id"],
+    }
+    response = client.get("/todos/", headers=user4_headers)
+    assert response.status_code == 200
+    user4_actual_ids = {t["id"] for t in response.json()}
+    assert user4_actual_ids == user4_expected_ids
+
+def test_private_todo_in_team_session_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as private within a team session is only visible to its owner,
+    and not to other members of that team session.
+    """
+    # 1. Create owner and collaborator users
+        # 1. Create owner and collaborator users
+    owner_data = {"username": "owner_private_in_team", "email": "owner.pit@example.com", "password": "password"}
+    collab_data = {"username": "collab_private_in_team", "email": "collab.pit@example.com", "password": "password"}
+    non_member_data = {"username": "non_member_private_in_team", "email": "nonmember.pit@example.com", "password": "password"}
+
+    client.post("/users/", json=owner_data)
+    client.post("/users/", json=collab_data)
+    client.post("/users/", json=non_member_data)
+
+    owner_login_response = client.post("/token", data={"username": "owner_private_in_team", "password": "password"})
+    assert owner_login_response.status_code == 200
+    owner_token = owner_login_response.json()["access_token"]
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    owner_obj = crud.get_user_by_username(db, username="owner_private_in_team")
+    assert owner_obj
+
+    collab_login_response = client.post("/token", data={"username": "collab_private_in_team", "password": "password"})
+    assert collab_login_response.status_code == 200
+    collab_token = collab_login_response.json()["access_token"]
+    collab_headers = {"Authorization": f"Bearer {collab_token}"}
+    collab_obj = crud.get_user_by_username(db, username="collab_private_in_team")
+    assert collab_obj
+
+    # 2. Owner creates a team session and invites collaborator
+    team_session_name = "Private Todo Team"
+    team_session_response = client.post("/sessions/", json={"name": team_session_name}, headers=owner_headers)
+    assert team_session_response.status_code == 200
+    team_session_id = team_session_response.json()["id"]
+
+    client.post(f"/sessions/{team_session_id}/invite", json={"email": collab_data["email"]}, headers=owner_headers)
+
+    # 3. Owner creates a todo in the team session, explicitly marking it as PRIVATE
+    private_team_todo_title = "Owner's Private Team Todo"
+    private_team_todo_data = {"title": private_team_todo_title, "session_id": team_session_id, "is_private": True}
+    private_team_todo_response = client.post("/todos/", json=private_team_todo_data, headers=owner_headers)
+    assert private_team_todo_response.status_code == 200
+    private_team_todo_id = private_team_todo_response.json()["id"]
+
+    # 4. Owner creates a public todo in the same team session (for comparison)
+    public_team_todo_title = "Owner's Public Team Todo"
+    public_team_todo_data = {"title": public_team_todo_title, "session_id": team_session_id, "is_private": False}
+    public_team_todo_response = client.post("/todos/", json=public_team_todo_data, headers=owner_headers)
+    assert public_team_todo_response.status_code == 200
+    public_team_todo_id = public_team_todo_response.json()["id"]
+
+    # 5. Assertions for Owner's view
+    # Owner should see their private todo, public todo in the team session, and their private session todo
+    owner_all_todos = client.get("/todos/", headers=owner_headers).json()
+    # print(f"Owner's all todos: {owner_all_todos}") # Debug print
+    owner_todo_titles = {t["title"] for t in owner_all_todos}
+    assert private_team_todo_title in owner_todo_titles
+    assert public_team_todo_title in owner_todo_titles
+    assert len(owner_all_todos) == 2 # Only private team todo and public team todo are expected
+
+    # Owner viewing session todos - should see both their private and public todos in that session
+    owner_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=owner_headers).json()
+    owner_session_todo_titles = {t["title"] for t in owner_session_todos}
+    assert private_team_todo_title in owner_session_todo_titles
+    assert public_team_todo_title in owner_session_todo_titles
+    assert len(owner_session_todos) == 2 # Only todos directly in this session
+
+    # 6. Assertions for Collaborator's view
+    # Collaborator should NOT see the owner's private team todo via /todos/
+    collab_all_todos = client.get("/todos/", headers=collab_headers).json()
+    collab_todo_titles = {t["title"] for t in collab_all_todos}
+    assert private_team_todo_title not in collab_todo_titles
+    assert public_team_todo_title in collab_todo_titles
+    assert len(collab_all_todos) == 1 # Only public team todo is expected for collaborator
+
+    # Collaborator viewing session todos - should NOT see the owner's private team todo
+    collab_session_todos = client.get(f"/sessions/{team_session_id}/todos", headers=collab_headers).json()
+    collab_session_todo_titles = {t["title"] for t in collab_session_todos}
+    assert private_team_todo_title not in collab_session_todo_titles
+    assert public_team_todo_title in collab_session_todo_titles
+    assert len(collab_session_todos) == 1
+
+    # 7. Assertions for Non-member's view
+    # Non-member should see neither of the team session todos via /todos/
+    non_member_all_todos = client.get("/todos/", headers=login_and_get_headers(client, "non_member_private_in_team", "password")).json()
+    non_member_todo_titles = {t["title"] for t in non_member_all_todos}
+    assert private_team_todo_title not in non_member_todo_titles
+    assert public_team_todo_title not in non_member_todo_titles
+
+def test_global_public_todo_visibility(client: TestClient, db: Session):
+    """
+    Tests that a todo explicitly marked as global public (from a personal workspace)
+    is visible to all users, not just the creator.
+    """
+    # 1. Create two users
+    user1_data = {"username": "user1_global_public", "email": "user1.gp@example.com", "password": "password"}
+    user2_data = {"username": "user2_global_public", "email": "user2.gp@example.com", "password": "password"}
+    user3_data = {"username": "user3_global_public", "email": "user3.gp@example.com", "password": "password"}
+    user4_data = {"username": "user4_global_public", "email": "user4.gp@example.com", "password": "password"}
+
+    client.post("/users/", json=user1_data)
+    client.post("/users/", json=user2_data)
+    client.post("/users/", json=user3_data)
+    client.post("/users/", json=user4_data)

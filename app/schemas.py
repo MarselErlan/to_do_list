@@ -16,6 +16,8 @@ class TodoBase(BaseModel):
 class TodoCreate(TodoBase):
     done: bool = False
     session_id: Optional[int] = None
+    is_private: Optional[bool] = None
+    is_global_public: Optional[bool] = None
 
 class TodoUpdate(BaseModel):
     title: Optional[str] = None
