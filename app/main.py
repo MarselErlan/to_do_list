@@ -231,7 +231,7 @@ def get_session_todos_endpoint(
         raise HTTPException(status_code=403, detail="User is not a member of this session")
 
     # 3. Get the todos
-    return crud.get_todos_by_session(db, session_id=session_id, user_id_filter=user_id)
+    return crud.get_todos_by_session(db, session_id=session_id, requesting_user_id=current_user.id, filter_by_owner_id=user_id)
 
 @app.get("/sessions/{session_id}/members", response_model=List[schemas.SessionMember])
 def get_session_members_endpoint(
