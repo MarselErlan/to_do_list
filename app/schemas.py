@@ -36,6 +36,7 @@ class Todo(TodoBase):
     owner_id: int
     created_at: datetime
     is_private: bool
+    is_global_public: bool = False
     session_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)

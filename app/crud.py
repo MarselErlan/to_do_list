@@ -170,9 +170,10 @@ def create_todo(db: Session, todo: schemas.TodoCreate, owner_id: int):
     is_global_public = todo.is_global_public if todo.is_global_public is not None else False
     
     if is_global_public:
-        # If globally public, it cannot be private or associated with a specific session
+        # If globally public, it cannot be private (always public)
         is_private = False
-        session_id_to_use = None # Global public todos are not tied to any specific session_id
+        # Retain session_id if provided, as a global public todo can still originate from a session
+        # session_id_to_use remains as initially set from todo.session_id
     elif todo.is_private is not None:
         # If explicitly provided, use the provided value for is_private
         is_private = todo.is_private
