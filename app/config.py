@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     use_credentials: bool = True
     validate_certs: bool = True
     template_folder: str = "app/email_templates"
-    suppress_send: bool = True
+    suppress_send: bool = False
 
     model_config = SettingsConfigDict(env_file=".env")
 

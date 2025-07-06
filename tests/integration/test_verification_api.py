@@ -2,10 +2,12 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 from app import crud, models
 from app.main import app
 from app.database import SessionLocal
+from app.email import FastMail, MessageSchema
 
 # Using the existing authenticated_client fixture from conftest
 # It provides a client and a test user, but we need to manage the db session
@@ -13,16 +15,13 @@ from app.database import SessionLocal
 
 def test_request_verification_code(client, db, monkeypatch):
     """
-    Test requesting a verification code for a new email, mocking the email sending.
+    Test requesting a verification code for a new email, mocking FastMail.send_message.
     """
-    # 1. Mock the email sending function
-    async def mock_send_email(email_to: str, code: str):
-        """A mock email function that does nothing."""
-        pass
-
-    monkeypatch.setattr("app.main.send_verification_email", mock_send_email)
-    
     test_email = "new_user@example.com"
+    
+    # 1. Mock FastMail.send_message to track calls without actually sending email
+    mock_send_message = AsyncMock()
+    monkeypatch.setattr(FastMail, "send_message", mock_send_message)
     
     response = client.post("/auth/request-verification", json={"email": test_email})
     
@@ -36,6 +35,17 @@ def test_request_verification_code(client, db, monkeypatch):
     assert verification_entry.email == test_email
     assert verification_entry.code is not None
     assert not verification_entry.verified
+    
+    # 4. Assert that FastMail.send_message was called with the correct message
+    mock_send_message.assert_called_once()
+    
+    # Get the MessageSchema object that was passed to send_message
+    called_message: MessageSchema = mock_send_message.call_args[0][0]
+    
+    assert called_message.subject == "Your Task Planner Verification Code"
+    assert called_message.recipients == [test_email]
+    assert "Your 6-digit verification code is:" in called_message.body
+    assert "Task Planner Team" in called_message.body
     
     db.close()
 

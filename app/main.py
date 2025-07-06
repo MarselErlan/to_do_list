@@ -9,12 +9,13 @@ from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import JWTError, jwt
 
 from . import crud, models, schemas
-from .database import SessionLocal, engine
-from .security import create_access_token
+from .database import SessionLocal, engine, get_db, init_db
+from .security import create_access_token, verify_password, get_password_hash
 from .config import settings
 from .email import send_verification_email
 
-# models.Base.metadata.create_all(bind=engine) # This should be handled by Alembic in production
+# Initialize database tables
+init_db()
 
 app = FastAPI(
     title="Todo List API",

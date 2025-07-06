@@ -380,24 +380,33 @@ def create_verification_code(db: Session, email: str) -> tuple[str | None, int]:
 
     now = datetime.utcnow()
 
-    if existing_verification and existing_verification.expires_at > now:
-        # Existing unexpired code found, increment attempts
-        existing_verification.attempts += 1
-        if existing_verification.attempts <= MAX_VERIFICATION_ATTEMPTS:
-            # Still within limits, generate new code, reset expiry
+    if existing_verification:
+        if existing_verification.expires_at > now:
+            # Existing unexpired code found, increment attempts
+            existing_verification.attempts += 1
+            if existing_verification.attempts <= MAX_VERIFICATION_ATTEMPTS:
+                # Still within limits, generate new code, reset expiry
+                plain_code = "".join(random.choices(string.digits, k=6))
+                existing_verification.code = pwd_context.hash(plain_code)
+                existing_verification.expires_at = now + timedelta(hours=5)
+                attempts_left = MAX_VERIFICATION_ATTEMPTS - existing_verification.attempts
+            else:
+                # Exceeded attempts, do not generate new code
+                plain_code = None
+                attempts_left = 0 # No attempts left
+            db.commit() # Commit changes to existing object
+            db.refresh(existing_verification)
+        else:
+            # Existing code is expired, update it with new code and reset attempts
             plain_code = "".join(random.choices(string.digits, k=6))
             existing_verification.code = pwd_context.hash(plain_code)
+            existing_verification.attempts = 1 # Reset attempts for new code
             existing_verification.expires_at = now + timedelta(hours=5)
-            attempts_left = MAX_VERIFICATION_ATTEMPTS - existing_verification.attempts
-        else:
-            # Exceeded attempts, do not generate new code
-            plain_code = None
-            attempts_left = 0 # No attempts left
-        db.add(existing_verification)
-        db.commit()
-        db.refresh(existing_verification)
+            db.commit() # Commit changes to existing object
+            db.refresh(existing_verification)
+            attempts_left = MAX_VERIFICATION_ATTEMPTS - 1
     else:
-        # No existing unexpired code, or it's expired. Create a new one.
+        # No existing code, create a new one.
         plain_code = "".join(random.choices(string.digits, k=6))
         db_verification = models.EmailVerification(
             email=email,
