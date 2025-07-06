@@ -39,6 +39,7 @@ class Todo(Base):
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=True)
     session = relationship("Session", back_populates="todos")
     is_private = Column(Boolean, default=True, nullable=False)
+    is_global_public = Column(Boolean, default=False, nullable=False)
 
 
 class Session(Base):

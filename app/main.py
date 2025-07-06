@@ -9,12 +9,13 @@ from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import JWTError, jwt
 
 from . import crud, models, schemas
-from .database import SessionLocal, engine
-from .security import create_access_token
+from .database import SessionLocal, engine, get_db, init_db
+from .security import create_access_token, verify_password, get_password_hash
 from .config import settings
 from .email import send_verification_email
 
-# models.Base.metadata.create_all(bind=engine) # This should be handled by Alembic in production
+# Initialize database tables
+init_db()
 
 app = FastAPI(
     title="Todo List API",
@@ -95,7 +96,7 @@ def create_todo_endpoint(todo: schemas.TodoCreate, db: Session = Depends(get_db)
 
 @app.get("/todos/", response_model=List[schemas.Todo])
 def read_todos_endpoint(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    todos = crud.get_todos_by_user(db, user_id=current_user.id, skip=skip, limit=limit)
+    todos = crud.get_relevant_todos_query(db, user_id=current_user.id).offset(skip).limit(limit).all()
     return todos
 
 # Time Management Endpoints
@@ -231,7 +232,7 @@ def get_session_todos_endpoint(
         raise HTTPException(status_code=403, detail="User is not a member of this session")
 
     # 3. Get the todos
-    return crud.get_todos_by_session(db, session_id=session_id, user_id_filter=user_id)
+    return crud.get_todos_by_session(db, session_id=session_id, requesting_user_id=current_user.id, filter_by_owner_id=user_id)
 
 @app.get("/sessions/{session_id}/members", response_model=List[schemas.SessionMember])
 def get_session_members_endpoint(
@@ -364,6 +365,20 @@ def forgot_username(request: schemas.EmailVerificationRequest, db: Session = Dep
             detail="User with this email not found",
         )
     return {"username": user.username}
+
+@app.delete("/users/me")
+def delete_current_user(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Allows an authenticated user to delete their own account and all associated data.
+    """
+    try:
+        crud.delete_user(db, current_user.id)
+        return {"message": "User and associated data deleted successfully."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # --- Email Verification Endpoints ---
 

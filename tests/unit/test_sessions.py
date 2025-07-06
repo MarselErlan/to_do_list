@@ -99,6 +99,6 @@ def test_get_todos_by_session(db: Session):
     team_todo_2_in = schemas.TodoCreate(title="Team 2", session_id=team_session.id)
     crud.create_todo(db, todo=team_todo_2_in, owner_id=user2.id)
 
-    user2_todos = crud.get_todos_by_session(db, session_id=team_session.id, user_id_filter=user2.id)
-    assert len(user2_todos) == 1
-    assert user2_todos[0].title == "Team 2" 
+    user2_todos = crud.get_todos_by_session(db, session_id=team_session.id, requesting_user_id=user2.id)
+    assert len(user2_todos) == 2
+    assert {t.title for t in user2_todos} == {"Team", "Team 2"} 

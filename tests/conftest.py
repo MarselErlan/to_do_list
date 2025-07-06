@@ -6,6 +6,18 @@ from sqlalchemy.pool import StaticPool
 import sys
 import os
 
+# Set environment variables for testing before app import
+os.environ["SECRET_KEY"] = "super-secret-test-key"
+os.environ["MAIL_USERNAME"] = "test@example.com"
+os.environ["MAIL_PASSWORD"] = "testpassword"
+os.environ["MAIL_FROM"] = "test@example.com"
+os.environ["MAIL_PORT"] = "587"
+os.environ["MAIL_SERVER"] = "smtp.test.com"
+os.environ["MAIL_STARTTLS"] = "True"
+os.environ["MAIL_SSL_TLS"] = "False"
+os.environ["DATABASE_URL"] = "sqlite:///./test.db"
+os.environ["SUPPRESS_SEND"] = "True" # Ensure emails are suppressed during testing
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app.main import app, get_db
