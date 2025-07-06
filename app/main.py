@@ -380,6 +380,13 @@ def delete_current_user(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/users/me", response_model=schemas.User)
+def read_users_me(current_user: models.User = Depends(get_current_user)):
+    """
+    Retrieve the current authenticated user's details.
+    """
+    return current_user
+
 # --- Email Verification Endpoints ---
 
 @app.post("/auth/request-verification", response_model=schemas.VerificationRequestResponse)
