@@ -26,11 +26,11 @@ def test_task_creator_node(monkeypatch):
     """
     # 1. Mock the dependencies
     mock_db_session = MagicMock()
+    # Mock the query chain for finding a session
+    mock_query = MagicMock()
+    mock_db_session.query.return_value.filter.return_value.first.return_value = MagicMock(id=123)
     mock_create_todo = MagicMock()
     monkeypatch.setattr(crud, "create_todo", mock_create_todo)
-
-    mock_get_session_by_name = MagicMock(return_value=MagicMock(id=123))
-    monkeypatch.setattr("app.llm_service.get_session_by_name", mock_get_session_by_name)
 
     # 2. Define the input state and config for the function
     input_state = {
@@ -72,7 +72,7 @@ def test_clarification_loop(monkeypatch):
     """
     # 1. Mock the parser to return an incomplete state (no title)
     parser_output = {"task_title": None, "description": "A meeting about the project"}
-    monkeypatch.setattr("app.llm_service.parse_user_request", lambda state, llm: parser_output)
+    monkeypatch.setattr("app.llm_service.parse_user_request", lambda state, config: parser_output)
 
     # 2. Mock the clarification node to see if it's called
     clarification_output = {"clarification_questions": ["What is the title of the task?"]}
@@ -88,7 +88,7 @@ def test_clarification_loop(monkeypatch):
 
     # 5. Create the graph and invoke it
     graph = create_graph()
-    final_state = graph.invoke({"user_query": "a meeting about the project"})
+    final_state = graph.invoke({"user_query": "a meeting about the project", "clarification_questions": [], "is_complete": False})
 
     # 6. Assertions
     mock_clarification_node.assert_called_once()
