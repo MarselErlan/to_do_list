@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from app.main import app, get_db
 from app.database import Base
+from app import models
 
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -97,3 +98,27 @@ def authenticated_client(client: TestClient, db: Session):
     client.headers["Authorization"] = f"Bearer {token}"
     
     return client 
+
+@pytest.fixture
+def test_user_token_headers(client: TestClient, db: Session) -> dict:
+    """
+    Creates a dedicated user for a test and returns their auth token headers.
+    """
+    from app.schemas import UserCreate
+    from app.crud import create_user
+    
+    test_username = "test_user_for_headers"
+    test_password = "password"
+    user_data = UserCreate(username=test_username, password=test_password, email=f"{test_username}@example.com")
+    
+    # Ensure the user exists for the test
+    existing_user = db.query(models.User).filter_by(username=test_username).first()
+    if not existing_user:
+        create_user(db=db, user=user_data)
+
+    # Log in to get the token
+    response = client.post("/token", data={"username": test_username, "password": test_password})
+    assert response.status_code == 200, "Failed to log in for headers"
+    token = response.json().get("access_token")
+    
+    return {"Authorization": f"Bearer {token}"} 

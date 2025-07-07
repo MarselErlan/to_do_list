@@ -8,11 +8,14 @@ from fastapi.routing import APIRoute
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import JWTError, jwt
 
-from . import crud, models, schemas
+from . import crud, models, schemas, llm_service
 from .database import SessionLocal, engine, get_db, init_db
 from .security import create_access_token, verify_password, get_password_hash
 from .config import settings
 from .email import send_verification_email
+
+# Global variable to hold the graph instance
+task_creation_graph = None
 
 # Initialize database tables
 init_db()
@@ -22,6 +25,17 @@ app = FastAPI(
     description="A simple todo list API built with FastAPI",
     version="1.0.0"
 )
+
+@app.on_event("startup")
+def startup_event():
+    """
+    Initializes the LangGraph instance when the application starts.
+    """
+    global task_creation_graph
+    # This creates the graph with the actual OpenAI LLM
+    task_creation_graph = llm_service.create_graph()
+    print("--- Task Creation Graph Initialized ---")
+
 
 # Add CORS middleware
 app.add_middleware(
@@ -35,10 +49,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-
-@app.get("/health", status_code=200)
-def health_check():
-    return {"status": "ok"}
 
 # Dependency
 def get_db():
@@ -69,6 +79,54 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
+# --- Chat Endpoint ---
+
+@app.post("/chat/create-task")
+def chat_create_task(
+    request: schemas.ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Handles a conversational request to create a to-do task.
+    """
+    if not task_creation_graph:
+        raise HTTPException(status_code=500, detail="Graph not initialized")
+
+    # Initial state for the graph, ensuring all keys are present
+    initial_state = {
+        "user_query": request.user_query,
+        "task_title": None,
+        "description": None,
+        "is_private": True,  # Default to private
+        "is_global_public": False,
+        "session_name": None,
+        "start_date": None,
+        "end_date": None,
+        "start_time": None,
+        "end_time": None,
+        "is_complete": False,
+        "clarification_questions": [],
+    }
+    
+    # Configuration to pass to the graph
+    config = {
+        "configurable": {
+            "db_session": db,
+            "owner_id": current_user.id
+        }
+    }
+
+    # Invoke the graph and return the final state
+    final_state = task_creation_graph.invoke(initial_state, config=config)
+    
+    return final_state
+
+
+@app.get("/health", status_code=200)
+def health_check():
+    return {"status": "ok"}
 
 @app.post("/todos/", response_model=schemas.Todo)
 def create_todo_endpoint(todo: schemas.TodoCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):

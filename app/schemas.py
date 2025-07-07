@@ -146,4 +146,10 @@ class MessageResponse(BaseModel):
 
 class VerificationRequestResponse(BaseModel):
     message: str
-    attempts_left: int 
+    attempts_left: int
+
+# --- Chat Schemas ---
+class ChatRequest(BaseModel):
+    user_query: str
+    # In the future, you could add conversation history here
+    # history: List[dict] = [] 
