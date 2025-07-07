@@ -10,6 +10,79 @@ from app.llm_service import TaskDetails
 
 @patch("app.llm_service.ChatOpenAI")
 @patch("langchain_core.runnables.base.RunnableSequence.invoke")
+def test_chat_create_task_with_conversation_history(
+    mock_chain_invoke: MagicMock,
+    mock_chat_openai: MagicMock,
+    client: TestClient,
+    db: Session,
+    test_user_token_headers: dict
+):
+    """
+    Tests creating a task over a multi-turn conversation, relying on langgraph state.
+    """
+    # 1. Setup: Get user
+    response = client.get("/users/me", headers=test_user_token_headers)
+    assert response.status_code == 200
+    current_user = schemas.User(**response.json())
+
+    # --- Turn 1: User is unclear ---
+    
+    # 2. Mock the LLM to ask for clarification
+    mock_chain_invoke.return_value = TaskDetails(
+        clarification_questions=["What is the title of the task?"]
+    )
+    
+    # 3. Call the API with an incomplete query
+    history1 = [{"sender": "user", "text": "I want to make a task"}]
+    with TestClient(app) as client:
+        response1 = client.post(
+            "/chat/create-task",
+            headers=test_user_token_headers,
+            json={"history": history1}
+        )
+    
+    # 4. Assert that the API asks for clarification
+    assert response1.status_code == 200
+    response_data1 = response1.json()
+    assert response_data1["is_complete"] is False
+    assert "I'm sorry, I couldn't determine a task title. What is the task?" in response_data1["clarification_questions"]
+
+    # --- Turn 2: User provides the title ---
+
+    # 5. Mock the LLM to successfully create the task now
+    mock_chain_invoke.return_value = TaskDetails(
+        task_title="Buy groceries",
+        description="Milk, bread, and eggs",
+        is_complete=True
+    )
+    
+    # 6. Call the API again with the full history
+    history2 = history1 + [
+        {"sender": "ai", "text": "I'm sorry, I couldn't determine a task title. What is the task?"},
+        {"sender": "user", "text": "The title is 'Buy groceries' and please add a description: Milk, bread, and eggs"}
+    ]
+    with TestClient(app) as client:
+        response2 = client.post(
+            "/chat/create-task",
+            headers=test_user_token_headers,
+            json={"history": history2}
+        )
+
+    # 7. Assert that the task was created successfully
+    assert response2.status_code == 200
+    response_data2 = response2.json()
+    assert response_data2["is_complete"] is True
+    
+    # 8. Verify the task in the database
+    todos = crud.get_todos_by_user(db, user_id=current_user.id)
+    assert len(todos) == 1
+    created_todo = todos[0]
+    assert created_todo.title == "Buy groceries"
+    assert created_todo.description == "Milk, bread, and eggs"
+
+
+@patch("app.llm_service.ChatOpenAI")
+@patch("langchain_core.runnables.base.RunnableSequence.invoke")
 def test_chat_create_task_in_team_workspace(
     mock_chain_invoke: MagicMock,
     mock_chat_openai: MagicMock,
@@ -39,7 +112,7 @@ def test_chat_create_task_in_team_workspace(
         response = api_client.post(
             "/chat/create-task",
             headers=test_user_token_headers,
-            json={"user_query": "Does not matter, as invoke is mocked"}
+            json={"history": [{"sender": "user", "text": "Does not matter, as invoke is mocked"}]}
         )
 
     # 4. Assertions
@@ -84,7 +157,7 @@ def test_chat_create_task_in_personal_workspace(
         response = api_client.post(
             "/chat/create-task",
             headers=test_user_token_headers,
-            json={"user_query": "Does not matter, as invoke is mocked"}
+            json={"history": [{"sender": "user", "text": "Does not matter, as invoke is mocked"}]}
         )
 
     # 4. Assertions
@@ -128,14 +201,15 @@ def test_chat_create_task_implicit_team_workspace(
     )
     
     # 3. Call the API, passing the current_session_id
-    response = client.post(
-        "/chat/create-task",
-        headers=test_user_token_headers,
-        json={
-            "user_query": "Review the new wireframes",
-            "current_session_id": current_session.id
-        }
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/create-task",
+            headers=test_user_token_headers,
+            json={
+                "history": [{"sender": "user", "text": "Review the new wireframes"}],
+                "current_session_id": current_session.id
+            }
+        )
 
     # 4. Assertions
     assert response.status_code == 200
@@ -172,14 +246,15 @@ def test_chat_create_task_explicit_different_team_workspace(
     )
 
     # 3. Call the API, passing the *current* session_id
-    response = client.post(
-        "/chat/create-task",
-        headers=test_user_token_headers,
-        json={
-            "user_query": "For the Marketing workspace, draft the Q3 social media plan",
-            "current_session_id": current_session.id
-        }
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/create-task",
+            headers=test_user_token_headers,
+            json={
+                "history": [{"sender": "user", "text": "For the Marketing workspace, draft the Q3 social media plan"}],
+                "current_session_id": current_session.id
+            }
+        )
 
     # 4. Assertions
     assert response.status_code == 200
@@ -215,11 +290,12 @@ def test_chat_create_task_global_public(
     )
 
     # 3. Call the API
-    response = client.post(
-        "/chat/create-task",
-        headers=test_user_token_headers,
-        json={"user_query": "Announce the company-wide holiday to everyone"}
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/create-task",
+            headers=test_user_token_headers,
+            json={"history": [{"sender": "user", "text": "Announce the company-wide holiday to everyone"}]}
+        )
 
     # 4. Assertions
     assert response.status_code == 200
@@ -269,11 +345,12 @@ def test_chat_create_task_single_team_general_request(
     private_session = next((s for s in private_session_response.json() if s.get("name") is None), None)
 
     request_payload = {
-        "user_query": "Create a task for the team to review Q3 results",
+        "history": [{"sender": "user", "text": "Create a task for the team to review Q3 results"}],
         "current_session_id": private_session["id"] if private_session else None,
     }
     
-    response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
+    with TestClient(app) as client:
+        response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
     
     assert response.status_code == 200, response.text
     response_data = response.json()
@@ -312,8 +389,9 @@ def test_chat_create_task_ambiguous_team_clarification(
     )
 
     # 3. Call the API
-    request_payload = { "user_query": "make a task for the developers to deploy to staging" }
-    response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
+    request_payload = { "history": [{"sender": "user", "text": "make a task for the developers to deploy to staging"}] }
+    with TestClient(app) as client:
+        response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
     
     assert response.status_code == 200, response.text
     response_data = response.json()
@@ -352,8 +430,9 @@ def test_chat_create_task_fuzzy_team_name(
     )
 
     # 3. Call the API with a fuzzy team name in the query
-    request_payload = { "user_query": "I love it when a plan comes together, make a task for the A Team" }
-    response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
+    request_payload = { "history": [{"sender": "user", "text": "I love it when a plan comes together, make a task for the A Team"}] }
+    with TestClient(app) as client:
+        response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
     
     assert response.status_code == 200, response.text
     response_data = response.json()
@@ -389,11 +468,12 @@ def test_chat_create_task_clarification_loop(
     )
 
     # 3. Call the API
-    response = client.post(
-        "/chat/create-task",
-        headers=test_user_token_headers,
-        json={"user_query": "schedule a meeting about the project"}
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/create-task",
+            headers=test_user_token_headers,
+            json={"history": [{"sender": "user", "text": "schedule a meeting about the project"}]}
+        )
 
     # 4. Assertions
     assert response.status_code == 200

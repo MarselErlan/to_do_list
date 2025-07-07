@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
 from sqlalchemy.orm import Session
 from . import crud, schemas, models
 from .database import get_db
@@ -27,11 +28,13 @@ class TaskDetails(BaseModel):
 class TaskCreationState(TypedDict):
     """The state of the task creation process."""
     user_query: str
+    history: List[dict]
+    session_name: Optional[str]
+    team_names: List[str]
     task_title: Optional[str]
     description: Optional[str]
     is_private: Optional[bool]
     is_global_public: Optional[bool]
-    session_name: Optional[str]
     start_date: Optional[str]
     end_date: Optional[str]
     start_time: Optional[str]
@@ -43,7 +46,7 @@ class TaskCreationState(TypedDict):
 
 def parse_user_request(state: TaskCreationState, config: dict):
     """Parses the user query to extract task details using the LLM."""
-    user_query = state["user_query"]
+    history = state.get("history", [])
     session_name = state.get("session_name") or "Private"
     team_names = state.get("team_names") or []
 
@@ -56,42 +59,70 @@ def parse_user_request(state: TaskCreationState, config: dict):
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
     
-    system_prompt = f"""You are an expert at extracting task details for a to-do list application.
-The user is currently in a workspace called '{session_name}'.
-The user is a member of the following team workspaces: {team_list_str}.
-Today's date is {{today}}.
+    system_prompt = f"""You are an expert assistant for a to-do list application. Your primary goal is to understand the user's request and extract the details for a task.
 
-From the user's request below, extract the following details:
-- The task title (task_title).
-- A detailed description (description).
-- Start and end dates (start_date, end_date) and times (start_time, end_time).
-- The user may want to create a task for a specific team. Your job is to determine the most likely team from the list of workspaces provided above. The user might not use the exact name. For example, if the user says 'for the API squad' and a team is named 'Backend API Team', you should select 'Backend API Team'. If you can confidently determine the team, you MUST extract its official name from the list as `session_name`.
-{single_team_instructions}
-- If you cannot confidently determine a specific team from the user's query, DO NOT return the `session_name` field.
-- If the user's request implies the task is for everyone in the company or public, set `is_global_public` to true.
-- If the user's request is for a personal task, set `is_private` to true. If the context is 'Private', you can assume it's private unless they specify a team.
+# Context
+- The user is currently in a workspace named: '{session_name}'.
+- The user is a member of the following team workspaces: {team_list_str}.
+- Today's date is {{today}}.
 
-If you don't have enough information for a `task_title`, ask clarifying questions.
-- If the user's query seems to refer to a team but you are uncertain which one from the list it is, you MUST ask for clarification. Add a question like "Which team did you mean for this task? Your teams are: {team_list_str}." to the `clarification_questions` field. Do not set a `session_name` in this case.
-- If the user does not mention a team at all, do not set `session_name` and do not ask for clarification about the team.
-Your output MUST be a JSON object conforming to the `TaskDetails` schema.
-Do not add any extra text or explanations.
+# Instructions
+1.  **Identify the Task**: First, figure out what the user wants to do. The task title is the core action or subject of the request.
+    - Example 1: If the user says, "i need to call bro so make task and make it in team", the `task_title` is "Call bro".
+    - Example 2: If the user says, "remind me to schedule the quarterly review", the `task_title` is "Schedule the quarterly review".
+2.  **Determine the Workspace**:
+    - The user may want the task in a specific team workspace. Look for team names in the user's request. The name might not be an exact match. Use the most likely team from the list provided.
+    - {single_team_instructions}
+    - If the user is in a team workspace and doesn't specify another, assume the task is for the current workspace by returning the current `session_name`.
+    - If you are not confident about the team, ask a clarifying question.
+3.  **Handle Ambiguity**:
+    - If the task title is unclear, ask the user for it.
+    - If the team name is unclear, ask for clarification.
+    - **Crucially, if you have already asked for a detail (like the title) and the user's next message seems to provide it, you MUST accept it as the answer.**
+4.  **Extract Details**: From the user's request, extract the following into a JSON object:
+    - `task_title`: The title of the task.
+    - `description`: Any additional details.
+    - `start_date`, `end_date`, `start_time`, `end_time`: Any dates and times.
+    - `session_name`: The name of the team workspace if you can confidently determine it. If it is a personal task, this should be null.
+    - `is_global_public`: Set to `true` if the task is for everyone (e.g., "company-wide").
+    - `is_private`: Set to `true` for personal tasks.
+    - `clarification_questions`: A list of questions to ask the user if any information is missing.
+
+Your response MUST be a JSON object matching the structure above.
 """
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-    ])
+    parser = JsonOutputParser(pydantic_object=TaskDetails)
+
+    # Convert the history to a format suitable for the prompt template
+    prompt_messages = [("system", system_prompt.format(today=date.today()))]
+    for msg in history:
+        if msg["sender"] == "user":
+            prompt_messages.append(("user", msg["text"]))
+        elif msg["sender"] == "ai":
+            prompt_messages.append(("ai", msg["text"]))
+
+    prompt = ChatPromptTemplate.from_messages(prompt_messages)
     
-    chain = prompt | llm.with_structured_output(TaskDetails)
+    chain = prompt | llm | parser
     
-    try:
-        details = chain.invoke({
-            "user_query": user_query, 
-            "today": date.today().isoformat()
-        })
-        return {k: v for k, v in details.model_dump().items() if v is not None}
-    except Exception as e:
-        return {"clarification_questions": [f"I had trouble understanding your request: {e}"]}
+    response_data = chain.invoke({})
+
+    # Update state with the extracted details
+    updated_state = state.copy()
+    llm_output = response_data.model_dump(exclude_unset=True)
+    
+    # Preserve original session_name for implicit team tasks
+    if llm_output.get('session_name') is None and not llm_output.get('is_private'):
+        llm_output.pop('session_name', None)
+
+    updated_state.update(llm_output)
+
+    # The 'user_query' is now the full history context, but we can keep the last message
+    # for logging or simple branching if needed.
+    if history:
+        updated_state["user_query"] = history[-1]["text"]
+
+    return updated_state
 
 def should_continue(state: TaskCreationState) -> Literal["task_creator", "clarification_requester"]:
     """Determines the next step based on whether a task title was extracted."""

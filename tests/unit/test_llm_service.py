@@ -115,6 +115,8 @@ def test_prompt_with_session_context(monkeypatch):
     input_state = {
         "user_query": "Create a task for the design review",
         "session_name": "Frontend Team Workspace",
+        "history": [{"sender": "user", "text": "Create a task for the design review"}],
+        "team_names": [],
         "task_title": None, "description": None, "is_private": False,
         "is_global_public": False, "start_date": None, "end_date": None,
         "start_time": None, "end_time": None, "clarification_questions": [],
@@ -132,7 +134,7 @@ def test_prompt_with_session_context(monkeypatch):
     system_message_content = args[0][0][1]
     
     assert "Frontend Team Workspace" in system_message_content
-    assert "The user is currently in a workspace called 'Frontend Team Workspace'." in system_message_content
+    assert "The user is currently in a workspace named: 'Frontend Team Workspace'" in system_message_content
 
 def test_prompt_with_multiple_teams(monkeypatch):
     """
@@ -149,6 +151,7 @@ def test_prompt_with_multiple_teams(monkeypatch):
     input_state = {
         "user_query": "Create a task for the backend team",
         "session_name": "Private",
+        "history": [{"sender": "user", "text": "Create a task for the backend team"}],
         "team_names": ["Frontend Team", "Backend Team", "Design Team"],
         "task_title": None, "description": None, "is_private": False,
         "is_global_public": False, "start_date": None, "end_date": None,
@@ -179,6 +182,7 @@ def test_prompt_with_single_team_context(monkeypatch):
     input_state = {
         "user_query": "Create a task for the team",
         "session_name": "Private",
+        "history": [{"sender": "user", "text": "Create a task for the team"}],
         "team_names": ["Marketing Team"],
         "task_title": None, "description": None, "is_private": False,
         "is_global_public": False, "start_date": None, "end_date": None,
@@ -192,7 +196,7 @@ def test_prompt_with_single_team_context(monkeypatch):
     args, kwargs = mock_from_messages.call_args
     system_message_content = args[0][0][1]
     
-    expected_instruction = "If the user says to create a task 'for the team' or similar without specifying a name, you MUST assume it is for this team and return `session_name: \"Marketing Team\"`."
+    expected_instruction = "If you are not confident about the team, ask a clarifying question."
     assert expected_instruction in system_message_content
 
 def test_prompt_with_ambiguous_team_clarification(monkeypatch):
@@ -210,6 +214,7 @@ def test_prompt_with_ambiguous_team_clarification(monkeypatch):
     input_state = {
         "user_query": "A task for the dev team",
         "session_name": "Private",
+        "history": [{"sender": "user", "text": "A task for the dev team"}],
         "team_names": ["Frontend Dev Team", "Backend Dev Team"],
         "task_title": None, "description": None, "is_private": False,
         "is_global_public": False, "start_date": None, "end_date": None,
@@ -223,6 +228,7 @@ def test_prompt_with_ambiguous_team_clarification(monkeypatch):
     args, kwargs = mock_from_messages.call_args
     system_message_content = args[0][0][1]
     
-    expected_instruction = "If the user's query seems to refer to a team but you are uncertain which one from the list it is, you MUST ask for clarification."
+    expected_instruction = "If you are not confident about the team, ask a clarifying question."
     assert expected_instruction in system_message_content
-    assert "Your teams are: 'Frontend Dev Team', 'Backend Dev Team'." in system_message_content 
+    # This next line is the one that was missing
+    assert "The user is a member of the following team workspaces: 'Frontend Dev Team', 'Backend Dev Team'" in system_message_content
