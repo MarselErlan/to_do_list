@@ -7,6 +7,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.routing import APIRoute
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import JWTError, jwt
+from contextlib import asynccontextmanager
 
 from . import crud, models, schemas, llm_service
 from .database import SessionLocal, engine, get_db, init_db
@@ -17,25 +18,29 @@ from .email import send_verification_email
 # Global variable to hold the graph instance
 task_creation_graph = None
 
-# Initialize database tables
-init_db()
-
-app = FastAPI(
-    title="Todo List API",
-    description="A simple todo list API built with FastAPI",
-    version="1.0.0"
-)
-
-@app.on_event("startup")
-def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
     Initializes the LangGraph instance when the application starts.
     """
     global task_creation_graph
     # This creates the graph with the actual OpenAI LLM
     task_creation_graph = llm_service.create_graph()
-    print("--- Task Creation Graph Initialized ---")
+    print("--- Task Creation Graph Initialized (via lifespan) ---")
+    yield
+    # Clean up resources if needed on shutdown
+    task_creation_graph = None
+    print("--- Task Creation Graph De-initialized (via lifespan) ---")
 
+# Initialize database tables
+init_db()
+
+app = FastAPI(
+    title="Todo List API",
+    description="A simple todo list API built with FastAPI",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # Add CORS middleware
 app.add_middleware(
@@ -104,9 +109,17 @@ def chat_create_task(
     all_sessions = crud.get_sessions_for_user(db, user_id=current_user.id)
     team_names = [s.name for s in all_sessions if s.name]
 
+    # The user's most recent message is the primary query for this turn.
+    user_query = ""
+    if request.history:
+        last_message = request.history[-1]
+        if last_message.sender == 'user':
+            user_query = last_message.text
+
     # Initial state for the graph, ensuring all necessary fields are present
     initial_state = {
-        "user_query": request.user_query,
+        "user_query": user_query,
+        "history": [msg.model_dump() for msg in request.history],
         "session_name": session_name,
         "team_names": team_names,
         "task_title": None,

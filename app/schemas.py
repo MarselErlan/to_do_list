@@ -149,8 +149,10 @@ class VerificationRequestResponse(BaseModel):
     attempts_left: int
 
 # --- Chat Schemas ---
+class ChatMessage(BaseModel):
+    sender: str # "ai" or "user"
+    text: str
+
 class ChatRequest(BaseModel):
-    user_query: str
-    current_session_id: Optional[int] = None
-    # In the future, you could add conversation history here
-    # history: List[dict] = [] 
+    history: List[ChatMessage]
+    current_session_id: Optional[int] = None 
