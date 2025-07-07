@@ -41,20 +41,37 @@ class TaskCreationState(TypedDict):
 def parse_user_request(state: TaskCreationState, config: dict):
     """Parses the user query to extract task details using the LLM."""
     user_query = state["user_query"]
+    # Get the session name from the state, which was set in main.py
+    session_name = state.get("session_name") or "Private"
+
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
     
+    system_prompt = f"""You are an expert at extracting task details for a to-do list application.
+The user is currently in a workspace called '{session_name}'.
+Today's date is {{today}}.
+
+From the user's request below, extract the following details:
+- The task title (task_title).
+- A detailed description (description).
+- Start and end dates (start_date, end_date) and times (start_time, end_time).
+- If the user's query explicitly mentions a DIFFERENT workspace or team, extract it as `session_name`. If they don't mention a specific workspace, you should not return a `session_name`.
+- Whether the task is for the user alone (`is_private`: true) or for a team (`is_private`: false). Tasks in a team workspace are generally not private.
+- Whether the task is for everyone, regardless of team (`is_global_public`: true).
+
+User Request: "{{user_query}}"
+"""
+    
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an expert at extracting task details for a to-do list application from a user's query. "
-                   "Today's date is {today}. Extract all relevant fields from the user's request. "
-                   "If a workspace or team name is mentioned, extract it as session_name. "
-                   "If the user says something is for 'everyone' or 'public', set is_global_public to True."),
-        ("human", "{user_query}")
+        ("system", system_prompt),
     ])
     
     chain = prompt | llm.with_structured_output(TaskDetails)
     
     try:
-        details = chain.invoke({"user_query": user_query, "today": date.today().isoformat()})
+        details = chain.invoke({
+            "user_query": user_query, 
+            "today": date.today().isoformat()
+        })
         return {k: v for k, v in details.model_dump().items() if v is not None}
     except Exception as e:
         return {"clarification_questions": [f"I had trouble understanding your request: {e}"]}

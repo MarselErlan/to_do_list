@@ -94,6 +94,12 @@ def chat_create_task(
     if not task_creation_graph:
         raise HTTPException(status_code=500, detail="Graph not initialized")
 
+    session_name = "Private" # Default to private
+    if request.current_session_id:
+        session = crud.get_session_by_id_for_user(db, session_id=request.current_session_id, user_id=current_user.id)
+        if session and session.name:
+            session_name = session.name
+
     # Initial state for the graph, ensuring all keys are present
     initial_state = {
         "user_query": request.user_query,
@@ -101,7 +107,7 @@ def chat_create_task(
         "description": None,
         "is_private": True,  # Default to private
         "is_global_public": False,
-        "session_name": None,
+        "session_name": session_name,
         "start_date": None,
         "end_date": None,
         "start_time": None,
