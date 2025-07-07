@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from sqlalchemy.orm import Session
 from . import crud, schemas, models
+from .database import get_db
 
 # --- State and Tool Schemas ---
 
@@ -20,6 +21,8 @@ class TaskDetails(BaseModel):
     end_date: Optional[str] = Field(None, description="The end date of the task in YYYY-MM-DD format.")
     start_time: Optional[str] = Field(None, description="The start time of the task in HH:MM:SS format.")
     end_time: Optional[str] = Field(None, description="The end time of the task in HH:MM:SS format.")
+    clarification_questions: Optional[List[str]] = Field(default=None, description="Questions to ask the user if details are missing.")
+    is_complete: bool = Field(default=False, description="Whether the task has been successfully created.")
 
 class TaskCreationState(TypedDict):
     """The state of the task creation process."""
@@ -33,7 +36,7 @@ class TaskCreationState(TypedDict):
     end_date: Optional[str]
     start_time: Optional[str]
     end_time: Optional[str]
-    clarification_questions: List[str]
+    clarification_questions: Optional[List[str]]
     is_complete: bool
 
 # --- Graph Nodes ---
@@ -41,24 +44,38 @@ class TaskCreationState(TypedDict):
 def parse_user_request(state: TaskCreationState, config: dict):
     """Parses the user query to extract task details using the LLM."""
     user_query = state["user_query"]
-    # Get the session name from the state, which was set in main.py
     session_name = state.get("session_name") or "Private"
+    team_names = state.get("team_names") or []
+
+    # Build a string for the prompt for better readability
+    team_list_str = ", ".join(f"'{name}'" for name in team_names) if team_names else "None"
+    
+    single_team_instructions = ""
+    if len(team_names) == 1:
+        single_team_instructions = f"""- The user is only in one team: '{team_names[0]}'. If the user says to create a task 'for the team' or similar without specifying a name, you MUST assume it is for this team and return `session_name: "{team_names[0]}"`."""
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
     
     system_prompt = f"""You are an expert at extracting task details for a to-do list application.
 The user is currently in a workspace called '{session_name}'.
+The user is a member of the following team workspaces: {team_list_str}.
 Today's date is {{today}}.
 
 From the user's request below, extract the following details:
 - The task title (task_title).
 - A detailed description (description).
 - Start and end dates (start_date, end_date) and times (start_time, end_time).
-- If the user's query explicitly mentions a DIFFERENT workspace or team, extract it as `session_name`. If they don't mention a specific workspace, you should not return a `session_name`.
-- Whether the task is for the user alone (`is_private`: true) or for a team (`is_private`: false). Tasks in a team workspace are generally not private.
-- Whether the task is for everyone, regardless of team (`is_global_public`: true).
+- The user may want to create a task for a specific team. Your job is to determine the most likely team from the list of workspaces provided above. The user might not use the exact name. For example, if the user says 'for the API squad' and a team is named 'Backend API Team', you should select 'Backend API Team'. If you can confidently determine the team, you MUST extract its official name from the list as `session_name`.
+{single_team_instructions}
+- If you cannot confidently determine a specific team from the user's query, DO NOT return the `session_name` field.
+- If the user's request implies the task is for everyone in the company or public, set `is_global_public` to true.
+- If the user's request is for a personal task, set `is_private` to true. If the context is 'Private', you can assume it's private unless they specify a team.
 
-User Request: "{{user_query}}"
+If you don't have enough information for a `task_title`, ask clarifying questions.
+- If the user's query seems to refer to a team but you are uncertain which one from the list it is, you MUST ask for clarification. Add a question like "Which team did you mean for this task? Your teams are: {team_list_str}." to the `clarification_questions` field. Do not set a `session_name` in this case.
+- If the user does not mention a team at all, do not set `session_name` and do not ask for clarification about the team.
+Your output MUST be a JSON object conforming to the `TaskDetails` schema.
+Do not add any extra text or explanations.
 """
     
     prompt = ChatPromptTemplate.from_messages([
@@ -85,12 +102,17 @@ def should_continue(state: TaskCreationState) -> Literal["task_creator", "clarif
 
 def create_task_in_db(state: TaskCreationState, config: dict):
     """Creates a new task in the database based on the extracted details."""
+    # If there are clarification questions, we should not create a task.
+    if state.get("clarification_questions"):
+        return { "is_complete": False }
+
     db: Session = config["configurable"]["db_session"]
     owner_id: int = config["configurable"]["owner_id"]
     title = state.get("task_title")
 
     if not title:
-        return {"is_complete": False, "clarification_questions": ["The task title is missing."]}
+        # This should have been caught by the clarification branch, but as a safeguard.
+        return { "is_complete": False, "clarification_questions": ["What is the title of the task?"] }
 
     try:
         session_id = None

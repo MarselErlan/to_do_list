@@ -235,6 +235,139 @@ def test_chat_create_task_global_public(
 
 @patch("app.llm_service.ChatOpenAI")
 @patch("langchain_core.runnables.base.RunnableSequence.invoke")
+def test_chat_create_task_single_team_general_request(
+    mock_chain_invoke: MagicMock,
+    mock_chat_openai: MagicMock,
+    client: TestClient, 
+    db: Session, 
+    test_user_token_headers: dict
+):
+    """
+    Tests that if a user is in only one team, a general request 'for the team'
+    correctly assigns the task to that single team.
+    """
+    # 1. Setup: Create a second user and a single team for the main user
+    # Note: We assume the test_user fixture creates a user, but we may need
+    # to create another session for them.
+    with Session(db.get_bind(), expire_on_commit=False) as setup_db:
+        # Get the current user
+        response = client.get("/users/me", headers=test_user_token_headers)
+        current_user = schemas.User(**response.json())
+        
+        # Create a single team session and add the user to it
+        team_session_create = schemas.SessionCreate(name="The Only Team")
+        team_session = crud.create_team_session(setup_db, session=team_session_create, owner_id=current_user.id)
+
+    # 2. Mock the LLM to recognize the team context and return a session name
+    mock_chain_invoke.return_value = TaskDetails(
+        task_title="Review Q3 marketing results",
+        session_name="The Only Team"
+    )
+
+    # 3. Call the API from the user's private context
+    private_session_response = client.get("/sessions", headers=test_user_token_headers)
+    private_session = next((s for s in private_session_response.json() if s.get("name") is None), None)
+
+    request_payload = {
+        "user_query": "Create a task for the team to review Q3 results",
+        "current_session_id": private_session["id"] if private_session else None,
+    }
+    
+    response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
+    
+    assert response.status_code == 200, response.text
+    response_data = response.json()
+    assert response_data["is_complete"] is True
+
+    # 4. Verify the task was created in the correct team session
+    todos = crud.get_todos_by_session(db, session_id=team_session.id, requesting_user_id=current_user.id)
+    assert len(todos) == 1
+    created_todo = todos[0]
+    assert created_todo.title == "Review Q3 marketing results"
+    assert created_todo.session_id == team_session.id
+
+@patch("app.llm_service.ChatOpenAI")
+@patch("langchain_core.runnables.base.RunnableSequence.invoke")
+def test_chat_create_task_ambiguous_team_clarification(
+    mock_chain_invoke: MagicMock,
+    mock_chat_openai: MagicMock,
+    client: TestClient,
+    db: Session,
+    test_user_token_headers: dict
+):
+    """
+    Tests that the API asks for clarification when a team name is ambiguous.
+    """
+    # 1. Setup: Create multiple teams with similar names
+    with Session(db.get_bind(), expire_on_commit=False) as setup_db:
+        response = client.get("/users/me", headers=test_user_token_headers)
+        current_user = schemas.User(**response.json())
+        crud.create_team_session(setup_db, session=schemas.SessionCreate(name="Frontend Developers"), owner_id=current_user.id)
+        crud.create_team_session(setup_db, session=schemas.SessionCreate(name="Backend Developers"), owner_id=current_user.id)
+
+    # 2. Mock the LLM to return a clarification question
+    mock_chain_invoke.return_value = TaskDetails(
+        task_title="Deploy to staging",
+        clarification_questions=["Which team did you mean for this task? Your teams are: 'Frontend Developers', 'Backend Developers'."]
+    )
+
+    # 3. Call the API
+    request_payload = { "user_query": "make a task for the developers to deploy to staging" }
+    response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
+    
+    assert response.status_code == 200, response.text
+    response_data = response.json()
+    
+    # 4. Assert that the response contains the clarification and is not complete
+    assert response_data["is_complete"] is False
+    assert "Which team did you mean" in response_data["clarification_questions"][0]
+
+    # 5. Assert that no task was created
+    todos = crud.get_todos_by_user(db, user_id=current_user.id)
+    assert len(todos) == 0
+
+@patch("app.llm_service.ChatOpenAI")
+@patch("langchain_core.runnables.base.RunnableSequence.invoke")
+def test_chat_create_task_fuzzy_team_name(
+    mock_chain_invoke: MagicMock,
+    mock_chat_openai: MagicMock,
+    client: TestClient,
+    db: Session,
+    test_user_token_headers: dict
+):
+    """
+    Tests that the AI can correctly identify a team by a fuzzy name.
+    """
+    # 1. Setup: Create a team with a specific name
+    with Session(db.get_bind(), expire_on_commit=False) as setup_db:
+        response = client.get("/users/me", headers=test_user_token_headers)
+        current_user = schemas.User(**response.json())
+        team_session_create = schemas.SessionCreate(name="The A-Team")
+        team_session = crud.create_team_session(setup_db, session=team_session_create, owner_id=current_user.id)
+
+    # 2. Mock the LLM to return the correct session name based on a fuzzy match
+    mock_chain_invoke.return_value = TaskDetails(
+        task_title="Solve a problem",
+        session_name="The A-Team"
+    )
+
+    # 3. Call the API with a fuzzy team name in the query
+    request_payload = { "user_query": "I love it when a plan comes together, make a task for the A Team" }
+    response = client.post("/chat/create-task", json=request_payload, headers=test_user_token_headers)
+    
+    assert response.status_code == 200, response.text
+    response_data = response.json()
+    assert response_data["is_complete"] is True
+
+    # 4. Verify the task was created in the correct team session
+    todos = crud.get_todos_by_session(db, session_id=team_session.id, requesting_user_id=current_user.id)
+    assert len(todos) == 1
+    created_todo = todos[0]
+    assert created_todo.title == "Solve a problem"
+    assert created_todo.session_id == team_session.id
+
+@patch("app.llm_service.ChatOpenAI")
+@patch("langchain_core.runnables.base.RunnableSequence.invoke")
 def test_chat_create_task_clarification_loop(
     mock_chain_invoke: MagicMock,
     mock_chat_openai: MagicMock,

@@ -132,4 +132,97 @@ def test_prompt_with_session_context(monkeypatch):
     system_message_content = args[0][0][1]
     
     assert "Frontend Team Workspace" in system_message_content
-    assert "The user is currently in a workspace called 'Frontend Team Workspace'." in system_message_content 
+    assert "The user is currently in a workspace called 'Frontend Team Workspace'." in system_message_content
+
+def test_prompt_with_multiple_teams(monkeypatch):
+    """
+    Tests that the prompt correctly includes a list of multiple team names.
+    """
+    mock_llm = MagicMock()
+    mock_chat_openai_class = MagicMock()
+    mock_chat_openai_class.return_value = mock_llm
+    monkeypatch.setattr("app.llm_service.ChatOpenAI", mock_chat_openai_class)
+    
+    mock_from_messages = MagicMock()
+    monkeypatch.setattr("app.llm_service.ChatPromptTemplate.from_messages", mock_from_messages)
+    
+    input_state = {
+        "user_query": "Create a task for the backend team",
+        "session_name": "Private",
+        "team_names": ["Frontend Team", "Backend Team", "Design Team"],
+        "task_title": None, "description": None, "is_private": False,
+        "is_global_public": False, "start_date": None, "end_date": None,
+        "start_time": None, "end_time": None, "clarification_questions": [],
+        "is_complete": False
+    }
+    
+    from app.llm_service import parse_user_request
+    parse_user_request(input_state, {})
+
+    args, kwargs = mock_from_messages.call_args
+    system_message_content = args[0][0][1]
+    
+    assert "The user is a member of the following team workspaces: 'Frontend Team', 'Backend Team', 'Design Team'" in system_message_content
+
+def test_prompt_with_single_team_context(monkeypatch):
+    """
+    Tests that the prompt includes the special instruction when the user is in only one team.
+    """
+    mock_llm = MagicMock()
+    mock_chat_openai_class = MagicMock()
+    mock_chat_openai_class.return_value = mock_llm
+    monkeypatch.setattr("app.llm_service.ChatOpenAI", mock_chat_openai_class)
+    
+    mock_from_messages = MagicMock()
+    monkeypatch.setattr("app.llm_service.ChatPromptTemplate.from_messages", mock_from_messages)
+    
+    input_state = {
+        "user_query": "Create a task for the team",
+        "session_name": "Private",
+        "team_names": ["Marketing Team"],
+        "task_title": None, "description": None, "is_private": False,
+        "is_global_public": False, "start_date": None, "end_date": None,
+        "start_time": None, "end_time": None, "clarification_questions": [],
+        "is_complete": False
+    }
+    
+    from app.llm_service import parse_user_request
+    parse_user_request(input_state, {})
+
+    args, kwargs = mock_from_messages.call_args
+    system_message_content = args[0][0][1]
+    
+    expected_instruction = "If the user says to create a task 'for the team' or similar without specifying a name, you MUST assume it is for this team and return `session_name: \"Marketing Team\"`."
+    assert expected_instruction in system_message_content
+
+def test_prompt_with_ambiguous_team_clarification(monkeypatch):
+    """
+    Tests that the prompt includes instructions to clarify when the team is ambiguous.
+    """
+    mock_llm = MagicMock()
+    mock_chat_openai_class = MagicMock()
+    mock_chat_openai_class.return_value = mock_llm
+    monkeypatch.setattr("app.llm_service.ChatOpenAI", mock_chat_openai_class)
+    
+    mock_from_messages = MagicMock()
+    monkeypatch.setattr("app.llm_service.ChatPromptTemplate.from_messages", mock_from_messages)
+    
+    input_state = {
+        "user_query": "A task for the dev team",
+        "session_name": "Private",
+        "team_names": ["Frontend Dev Team", "Backend Dev Team"],
+        "task_title": None, "description": None, "is_private": False,
+        "is_global_public": False, "start_date": None, "end_date": None,
+        "start_time": None, "end_time": None, "clarification_questions": [],
+        "is_complete": False
+    }
+    
+    from app.llm_service import parse_user_request
+    parse_user_request(input_state, {})
+
+    args, kwargs = mock_from_messages.call_args
+    system_message_content = args[0][0][1]
+    
+    expected_instruction = "If the user's query seems to refer to a team but you are uncertain which one from the list it is, you MUST ask for clarification."
+    assert expected_instruction in system_message_content
+    assert "Your teams are: 'Frontend Dev Team', 'Backend Dev Team'." in system_message_content 

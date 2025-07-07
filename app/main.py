@@ -100,14 +100,17 @@ def chat_create_task(
         if session and session.name:
             session_name = session.name
 
-    # Initial state for the graph, ensuring all keys are present
+    # Get all team names for the user to provide as context to the LLM
+    all_sessions = crud.get_sessions_for_user(db, user_id=current_user.id)
+    team_names = [s.name for s in all_sessions if s.name]
+
+    # Initial state for the graph, ensuring all necessary fields are present
     initial_state = {
         "user_query": request.user_query,
+        "session_name": session_name,
+        "team_names": team_names,
         "task_title": None,
         "description": None,
-        "is_private": True,  # Default to private
-        "is_global_public": False,
-        "session_name": session_name,
         "start_date": None,
         "end_date": None,
         "start_time": None,
