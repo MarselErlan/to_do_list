@@ -151,5 +151,6 @@ class VerificationRequestResponse(BaseModel):
 # --- Chat Schemas ---
 class ChatRequest(BaseModel):
     user_query: str
+    current_session_id: Optional[int] = None
     # In the future, you could add conversation history here
     # history: List[dict] = [] 

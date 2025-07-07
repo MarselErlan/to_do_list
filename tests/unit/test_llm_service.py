@@ -95,3 +95,41 @@ def test_clarification_loop(monkeypatch):
     mock_create_todo.assert_not_called()
     assert final_state["clarification_questions"] == ["What is the title of the task?"]
     assert final_state.get("is_complete") is not True 
+
+def test_prompt_with_session_context(monkeypatch):
+    """
+    Tests that the prompt correctly includes the session name from the state.
+    """
+    # 1. Mock the LLM and the prompt template to inspect them
+    mock_llm = MagicMock()
+    # Make the ChatOpenAI return our mock LLM
+    mock_chat_openai_class = MagicMock()
+    mock_chat_openai_class.return_value = mock_llm
+    monkeypatch.setattr("app.llm_service.ChatOpenAI", mock_chat_openai_class)
+    
+    # Correctly mock the class method `from_messages`
+    mock_from_messages = MagicMock()
+    monkeypatch.setattr("app.llm_service.ChatPromptTemplate.from_messages", mock_from_messages)
+    
+    # 2. Define the input state with a session name
+    input_state = {
+        "user_query": "Create a task for the design review",
+        "session_name": "Frontend Team Workspace",
+        "task_title": None, "description": None, "is_private": False,
+        "is_global_public": False, "start_date": None, "end_date": None,
+        "start_time": None, "end_time": None, "clarification_questions": [],
+        "is_complete": False
+    }
+    
+    # 3. Call the function
+    from app.llm_service import parse_user_request
+    parse_user_request(input_state, {})
+
+    # 4. Assert that the prompt contains the session name
+    # The first call to from_messages has the prompt content
+    args, kwargs = mock_from_messages.call_args
+    # The prompt is now a single system message: [('system', prompt_string)]
+    system_message_content = args[0][0][1]
+    
+    assert "Frontend Team Workspace" in system_message_content
+    assert "The user is currently in a workspace called 'Frontend Team Workspace'." in system_message_content 

@@ -502,13 +502,30 @@ def get_todos_by_session(db: Session, session_id: int, requesting_user_id: int |
 
 def get_sessions_for_user(db: Session, user_id: int):
     """
-    Gets all sessions a user is a member of, along with their role in each.
+    Gets all sessions a user is a member of, returning their role in each.
+    This includes their private session (which has no name).
     """
     return db.query(
         models.Session.id,
         models.Session.name,
         models.SessionMember.role
     ).join(models.SessionMember).filter(models.SessionMember.user_id == user_id).all()
+
+def get_session_by_id_for_user(db: Session, session_id: int, user_id: int) -> models.Session | None:
+    """
+    Gets a session by its ID, but only if the user is a member of that session.
+    """
+    # First, check if the user is a member of the session.
+    member_check = db.query(models.SessionMember).filter(
+        models.SessionMember.session_id == session_id,
+        models.SessionMember.user_id == user_id
+    ).first()
+
+    if not member_check:
+        return None  # User is not a member
+
+    # If they are a member, return the session details.
+    return db.query(models.Session).filter(models.Session.id == session_id).first()
 
 def get_session_members(db: Session, session_id: int):
     """
