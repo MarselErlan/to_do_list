@@ -13,7 +13,7 @@ from . import crud, models, schemas, llm_service
 from .database import SessionLocal, engine, get_db, init_db
 from .security import create_access_token, verify_password, get_password_hash
 from .config import settings
-from .email import send_verification_email
+# from .email import send_verification_email
 
 # Global variable to hold the graph instance
 task_creation_graph = None
@@ -473,7 +473,12 @@ async def request_verification_code(
             detail=f"Too many verification attempts. Please wait 5 hours before trying again."
         )
 
-    await send_verification_email(email_to=request.email, code=plain_code)
+    # try:
+    #     send_verification_email(email_to=request.email, code=plain_code)
+    # except Exception as e:
+    #     logger.error(f"Failed to send verification email to {request.email}: {e}")
+    #     raise HTTPException(status_code=500, detail="Failed to send verification email.")
+
     return {"message": "Verification code sent successfully", "attempts_left": attempts_left}
 
 @app.post("/auth/forgot-password", response_model=schemas.PasswordResetRequestResponse)
@@ -503,7 +508,11 @@ async def forgot_password(
 
     # 3. Create and send new code
     code = crud.create_verification_code(db, email=request.email)
-    await send_verification_email(email_to=request.email, code=code)
+    # try:
+    #     send_verification_email(email_to=request.email, code=code)
+    # except Exception as e:
+    #     logger.error(f"Failed to send password reset email to {request.email}: {e}")
+    #     raise HTTPException(status_code=500, detail="Failed to send password reset email.")
 
     return {"message": "Password reset code sent", "username": user.username}
 

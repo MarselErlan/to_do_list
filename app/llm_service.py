@@ -105,26 +105,17 @@ Your response MUST be a JSON object matching the structure above.
     
     chain = prompt | llm | parser
     
-    try:
-        response_data = chain.invoke({})
-    except Exception as e:
-        print("--- ERROR DURING CHAIN INVOCATION ---")
-        # Let's inspect the raw response
-        llm_chain = prompt | llm
-        raw_response_message = llm_chain.invoke({})
-        print("--- RAW LLM RESPONSE (AIMessage object) ---")
-        print(raw_response_message)
-        print("--- RAW LLM RESPONSE CONTENT ---")
-        print(raw_response_message.content)
-        print("--- CHAIN INVOCATION FAILED WITH ---")
-        print(e)
-        print("--- END ERROR INFO ---")
-        raise e
+    response_data = chain.invoke({})
 
     # Update state with the extracted details
     updated_state = state.copy()
-    llm_output = response_data.model_dump(exclude_unset=True)
     
+    llm_output = {}
+    if isinstance(response_data, TaskDetails):
+        llm_output = response_data.model_dump(exclude_unset=True)
+    elif isinstance(response_data, dict):
+        llm_output = response_data
+
     # Preserve original session_name for implicit team tasks
     if llm_output.get('session_name') is None and not llm_output.get('is_private'):
         llm_output.pop('session_name', None)
