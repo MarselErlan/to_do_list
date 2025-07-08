@@ -105,7 +105,21 @@ Your response MUST be a JSON object matching the structure above.
     
     chain = prompt | llm | parser
     
-    response_data = chain.invoke({})
+    try:
+        response_data = chain.invoke({})
+    except Exception as e:
+        print("--- ERROR DURING CHAIN INVOCATION ---")
+        # Let's inspect the raw response
+        llm_chain = prompt | llm
+        raw_response_message = llm_chain.invoke({})
+        print("--- RAW LLM RESPONSE (AIMessage object) ---")
+        print(raw_response_message)
+        print("--- RAW LLM RESPONSE CONTENT ---")
+        print(raw_response_message.content)
+        print("--- CHAIN INVOCATION FAILED WITH ---")
+        print(e)
+        print("--- END ERROR INFO ---")
+        raise e
 
     # Update state with the extracted details
     updated_state = state.copy()
