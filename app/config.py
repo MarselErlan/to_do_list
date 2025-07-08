@@ -11,7 +11,18 @@ class Settings(BaseSettings):
     LANGCHAIN_PROJECT: str | None = None
     SENDGRID_API_KEY: str | None = None
 
+    # Mail settings
+    MAIL_USERNAME: Optional[str] = None
+    MAIL_PASSWORD: Optional[str] = None
+    MAIL_FROM: Optional[EmailStr] = None
+    MAIL_PORT: Optional[int] = None
+    MAIL_SERVER: Optional[str] = None
+    MAIL_STARTTLS: bool = False
+    MAIL_SSL_TLS: bool = False
+    SUPPRESS_SEND: bool = False
+
     class Config:
         env_file = ".env"
+        extra='ignore'
 
 settings = Settings() 
