@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     template_folder: str = "app/email_templates"
     suppress_send: bool = False
 
-    model_config = SettingsConfigDict(env_file=".env", extra='ignore')
+    model_config = SettingsConfigDict(extra='ignore')
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
