@@ -2,6 +2,8 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
+
+from app.schemas import TokenData
 from .config import settings
 
 # Use bcrypt for password hashing
