@@ -144,7 +144,7 @@ def parse_task_request(state: TaskCreationState, config: dict):
 - Simple todos → minimal fields needed
 
 # Output Structure
-{{
+{{{{
   "task_title": "string or null",
   "description": "string or null", 
   "start_date": "YYYY-MM-DD or null",
@@ -156,7 +156,7 @@ def parse_task_request(state: TaskCreationState, config: dict):
   "is_global_public": "boolean or null",
   "clarification_questions": ["array of questions if needed"],
   "is_complete": false
-}}
+}}}}
 
 Remember: Extract what you can, ask clarification for missing critical details only."""
 
