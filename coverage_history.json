@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp": "2025-07-09T14:21:38.009034",
+    "coverage_percent": 92.5,
+    "test_type": "unit",
+    "target_met": true
+  },
+  {
+    "timestamp": "2025-07-09T14:21:38.009034",
+    "coverage_percent": 89.3,
+    "test_type": "integration",
+    "target_met": false
+  },
+  {
+    "timestamp": "2025-07-09T14:21:38.009034",
+    "coverage_percent": 95.1,
+    "test_type": "scenarios",
+    "target_met": true
+  }
+]
