@@ -161,9 +161,12 @@ class VoiceAssistantService:
         except Exception as e:
             return {"error": str(e)}
     
-    def process_with_langchain(self, transcript: str, user_id: int, session_name: str) -> Dict[str, Any]:
+    def process_with_langchain(self, transcript: str, user_id: int, session_name: str, team_names: list = None) -> Dict[str, Any]:
         """Process transcript with existing LangChain pipeline."""
         try:
+            if team_names is None:
+                team_names = []
+            
             # Use existing LangChain graph
             graph = create_graph()
             
@@ -172,7 +175,7 @@ class VoiceAssistantService:
                 "user_query": transcript,
                 "history": [{"sender": "user", "text": transcript}],
                 "session_name": session_name,
-                "team_names": [],  # TODO: Get actual team names
+                "team_names": team_names,
                 "is_complete": False
             }
             
@@ -200,60 +203,87 @@ class VoiceAssistant:
         """Initialize voice assistant."""
         self.service = VoiceAssistantService()
     
-    async def websocket_endpoint(self, websocket: WebSocket):
+    async def websocket_endpoint(self, websocket: WebSocket, user_id: int):
         """Handle WebSocket connection for voice assistant."""
         await websocket.accept()
-        await self.process_audio_stream(websocket)
+        await self.process_audio_stream(websocket, user_id)
     
-    async def process_audio_stream(self, websocket: WebSocket):
+    async def process_audio_stream(self, websocket: WebSocket, user_id: int):
         """Process continuous audio stream from WebSocket."""
         try:
-            while True:
-                # Receive audio data from client
-                data = await websocket.receive_text()
-                message = json.loads(data)
+            # Get user context from database
+            db = next(get_db())
+            try:
+                # Get user's sessions/teams for context
+                user_sessions = db.query(models.Session).join(models.SessionMember).filter(
+                    models.SessionMember.user_id == user_id
+                ).all()
+                team_names = [session.name for session in user_sessions if session.name]
                 
-                if "audio" in message:
-                    audio_data = base64.b64decode(message["audio"])
+                # Default session context
+                current_session_name = "Personal"
+                
+                while True:
+                    # Receive audio data from client
+                    data = await websocket.receive_text()
+                    message = json.loads(data)
                     
-                    # Process audio chunk
-                    result = self.service.process_audio_chunk(audio_data)
-                    
-                    if "error" in result:
-                        await websocket.send_json({"error": result["error"]})
+                    # Handle session context updates
+                    if "session_name" in message:
+                        current_session_name = message["session_name"]
+                        await websocket.send_json({"session_updated": current_session_name})
                         continue
                     
-                    transcript = result.get("transcript", "")
-                    is_final = result.get("is_final", False)
-                    
-                    if is_final and transcript:
-                        # Process with LangChain
-                        llm_result = self.service.process_with_langchain(
-                            transcript, 
-                            user_id=1,  # TODO: Get actual user ID
-                            session_name="Personal"  # TODO: Get actual session
-                        )
+                    if "audio" in message:
+                        audio_data = base64.b64decode(message["audio"])
                         
-                        # Generate response message
-                        if llm_result.get("is_complete"):
-                            response_text = f"Task '{llm_result.get('task_title', 'created')}' has been created successfully!"
+                        # Process audio chunk
+                        result = self.service.process_audio_chunk(audio_data)
+                        
+                        if "error" in result:
+                            await websocket.send_json({"error": result["error"]})
+                            continue
+                        
+                        transcript = result.get("transcript", "")
+                        is_final = result.get("is_final", False)
+                        
+                        if is_final and transcript:
+                            # Process with LangChain using proper user context
+                            llm_result = self.service.process_with_langchain(
+                                transcript, 
+                                user_id=user_id,
+                                session_name=current_session_name,
+                                team_names=team_names
+                            )
+                            
+                            # Generate response message
+                            if llm_result.get("is_complete"):
+                                response_text = f"Task '{llm_result.get('task_title', 'created')}' has been created successfully!"
+                            else:
+                                clarification_questions = llm_result.get("clarification_questions", [])
+                                if clarification_questions:
+                                    response_text = clarification_questions[0]
+                                else:
+                                    response_text = "I need more information to create the task."
+                            
+                            # Convert to speech
+                            audio_response = self.service.text_to_speech(response_text)
+                            
+                            # Send response
+                            await websocket.send_json({
+                                "transcript": transcript,
+                                "response": base64.b64encode(audio_response).decode() if audio_response else "",
+                                "response_text": response_text,
+                                "llm_result": llm_result
+                            })
                         else:
-                            response_text = "I need more information to create the task."
-                        
-                        # Convert to speech
-                        audio_response = self.service.text_to_speech(response_text)
-                        
-                        # Send response
-                        await websocket.send_json({
-                            "transcript": transcript,
-                            "response": base64.b64encode(audio_response).decode(),
-                            "llm_result": llm_result
-                        })
-                    else:
-                        # Send interim result
-                        await websocket.send_json({
-                            "interim_transcript": transcript
-                        })
+                            # Send interim result
+                            await websocket.send_json({
+                                "interim_transcript": transcript
+                            })
+                            
+            finally:
+                db.close()
                         
         except WebSocketDisconnect:
             pass
@@ -262,8 +292,11 @@ class VoiceAssistant:
         finally:
             await websocket.close()
     
-    def process_voice_command(self, audio_data: bytes, user_id: int, session_name: str) -> Dict[str, Any]:
+    def process_voice_command(self, audio_data: bytes, user_id: int, session_name: str, team_names: list = None) -> Dict[str, Any]:
         """Process a single voice command (for testing/non-WebSocket use)."""
+        if team_names is None:
+            team_names = []
+        
         # Process audio
         result = self.service.process_audio_chunk(audio_data)
         
@@ -275,7 +308,7 @@ class VoiceAssistant:
             return {"error": "No speech detected"}
         
         # Process with LangChain
-        llm_result = self.service.process_with_langchain(transcript, user_id, session_name)
+        llm_result = self.service.process_with_langchain(transcript, user_id, session_name, team_names)
         
         # Generate response
         if llm_result.get("is_complete"):
@@ -286,20 +319,26 @@ class VoiceAssistant:
                 "task_created": True,
                 "task_title": llm_result.get("task_title"),
                 "transcript": transcript,
-                "audio_response": base64.b64encode(audio_response).decode(),
+                "audio_response": base64.b64encode(audio_response).decode() if audio_response else "",
                 "llm_result": llm_result
             }
         else:
+            clarification_questions = llm_result.get("clarification_questions", [])
+            response_text = clarification_questions[0] if clarification_questions else "I need more information to create the task."
+            
             return {
                 "task_created": False,
                 "transcript": transcript,
                 "clarification_needed": True,
+                "response_text": response_text,
                 "llm_result": llm_result
             }
 
 
 # Helper function for tests
-def get_langchain_response(transcript: str, user_id: int, session_name: str) -> Dict[str, Any]:
+def get_langchain_response(transcript: str, user_id: int, session_name: str, team_names: list = None) -> Dict[str, Any]:
     """Helper function to get LangChain response (for testing purposes)."""
+    if team_names is None:
+        team_names = []
     service = VoiceAssistantService()
-    return service.process_with_langchain(transcript, user_id, session_name) 
+    return service.process_with_langchain(transcript, user_id, session_name, team_names) 
