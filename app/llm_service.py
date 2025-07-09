@@ -129,12 +129,12 @@ CONTEXT:
 INTELLIGENCE REQUIREMENTS:
 
 1. TIME PARSING EXPERTISE:
-   - "after 1 hour" -> calculate start_time as current time + 1 hour
-   - "in 15 minutes" -> calculate start_time as current time + 15 minutes  
-   - "tomorrow morning" -> set start_date to tomorrow, start_time to 09:00:00
-   - "next week" -> set start_date to next Monday
-   - "at 3pm" -> set start_time to 15:00:00
-   - Be smart about relative time expressions
+   - "after 1 hour" -> set start_time as current time + 1 hour (use HH:MM:SS format ONLY)
+   - "in 15 minutes" -> set start_time as current time + 15 minutes (use HH:MM:SS format ONLY)
+   - "tomorrow morning" -> set start_date to tomorrow (YYYY-MM-DD), start_time to 09:00:00
+   - "next week" -> set start_date to next Monday (YYYY-MM-DD format)
+   - "at 3pm" -> set start_time to 15:00:00 (HH:MM:SS format)
+   - CRITICAL: Always use separate date and time fields, NEVER combine them
 
 2. TASK TITLE EXTRACTION:
    - "call Ruslan after 1 hour" -> task_title: "Call Ruslan"
@@ -163,10 +163,10 @@ CRITICAL OUTPUT REQUIREMENTS:
 JSON FIELDS TO POPULATE:
 - task_title: The main action/task (required for task creation)
 - description: Additional details if provided
-- start_date: YYYY-MM-DD format if date mentioned
-- end_date: YYYY-MM-DD format if end date mentioned  
-- start_time: HH:MM:SS format if specific time mentioned
-- end_time: HH:MM:SS format if duration/end time mentioned
+- start_date: YYYY-MM-DD format ONLY (e.g., "2025-01-15")
+- end_date: YYYY-MM-DD format ONLY if end date mentioned  
+- start_time: HH:MM:SS format ONLY (e.g., "14:30:00")
+- end_time: HH:MM:SS format ONLY if duration/end time mentioned
 - session_name: team name if work-related or specified
 - is_private: true for personal tasks, false for team tasks
 - is_global_public: true only if explicitly company-wide
@@ -175,13 +175,15 @@ JSON FIELDS TO POPULATE:
 
 EXAMPLES OF INTELLIGENT PROCESSING:
 - Input: "call Ruslan after 1 hour"
-  Smart processing: Extract "Call Ruslan" as title, calculate start_time as now + 1 hour
+  Smart processing: Extract "Call Ruslan" as title, calculate start_time as now + 1 hour in HH:MM:SS format
   
-- Input: "remind me to buy groceries tomorrow"  
-  Smart processing: Extract "Buy groceries" as title, set start_date to tomorrow, is_private true
+- Input: "remind me to buy groceries tomorrow at 10am"  
+  Smart processing: Extract "Buy groceries" as title, set start_date to tomorrow in YYYY-MM-DD, start_time to "10:00:00"
 
 - Input: "schedule team meeting next week"
-  Smart processing: Extract "Team meeting" as title, set start_date to next Monday, suggest team
+  Smart processing: Extract "Team meeting" as title, set start_date to next Monday in YYYY-MM-DD format
+
+CRITICAL: NEVER use combined datetime formats like "2025-01-15T14:30:00". Always use separate date and time fields.
 
 Be intelligent, contextual, and user-friendly while maintaining strict JSON output format."""
 
@@ -272,10 +274,36 @@ def create_task_in_db(state: TaskCreationState, config: dict):
                     session_id = session_obj.id
         
         def parse_date(date_str: Optional[str]) -> Optional[date]:
-            return date.fromisoformat(date_str) if isinstance(date_str, str) else None
+            """Parse date string with robust error handling."""
+            if not isinstance(date_str, str):
+                return None
+            try:
+                # Handle ISO datetime format (extract date part)
+                if 'T' in date_str:
+                    date_str = date_str.split('T')[0]
+                return date.fromisoformat(date_str)
+            except (ValueError, TypeError):
+                return None
 
         def parse_time(time_str: Optional[str]) -> Optional[time]:
-            return time.fromisoformat(time_str) if isinstance(time_str, str) else None
+            """Parse time string with robust error handling."""
+            if not isinstance(time_str, str):
+                return None
+            try:
+                # Handle ISO datetime format (extract time part)
+                if 'T' in time_str:
+                    time_str = time_str.split('T')[1]
+                # Remove timezone info if present
+                if '+' in time_str:
+                    time_str = time_str.split('+')[0]
+                if 'Z' in time_str:
+                    time_str = time_str.replace('Z', '')
+                # Ensure format is HH:MM:SS
+                if len(time_str.split(':')) == 2:
+                    time_str += ':00'
+                return time.fromisoformat(time_str)
+            except (ValueError, TypeError):
+                return None
 
         todo_create = schemas.TodoCreate(
             title=title,
