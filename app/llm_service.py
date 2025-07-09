@@ -129,12 +129,13 @@ CONTEXT:
 INTELLIGENCE REQUIREMENTS:
 
 1. TIME PARSING EXPERTISE:
-   - "after 1 hour" -> set start_time as current time + 1 hour (use HH:MM:SS format ONLY)
-   - "in 15 minutes" -> set start_time as current time + 15 minutes (use HH:MM:SS format ONLY)
+   - "after 1 hour" -> set start_date to today (YYYY-MM-DD) AND start_time as current time + 1 hour (HH:MM:SS)
+   - "in 15 minutes" -> set start_date to today (YYYY-MM-DD) AND start_time as current time + 15 minutes (HH:MM:SS)
    - "tomorrow morning" -> set start_date to tomorrow (YYYY-MM-DD), start_time to 09:00:00
    - "next week" -> set start_date to next Monday (YYYY-MM-DD format)
-   - "at 3pm" -> set start_time to 15:00:00 (HH:MM:SS format)
+   - "at 3pm" -> set start_date to today (YYYY-MM-DD) AND start_time to 15:00:00 (HH:MM:SS format)
    - CRITICAL: Always use separate date and time fields, NEVER combine them
+   - CRITICAL: For relative times (after/in X minutes/hours), ALWAYS set today's date too
 
 2. TASK TITLE EXTRACTION:
    - "call Ruslan after 1 hour" -> task_title: "Call Ruslan"
@@ -175,13 +176,16 @@ JSON FIELDS TO POPULATE:
 
 EXAMPLES OF INTELLIGENT PROCESSING:
 - Input: "call Ruslan after 1 hour"
-  Smart processing: Extract "Call Ruslan" as title, calculate start_time as now + 1 hour in HH:MM:SS format
+  Smart processing: Extract "Call Ruslan" as title, set start_date to today, calculate start_time as now + 1 hour in HH:MM:SS format
   
 - Input: "remind me to buy groceries tomorrow at 10am"  
   Smart processing: Extract "Buy groceries" as title, set start_date to tomorrow in YYYY-MM-DD, start_time to "10:00:00"
 
 - Input: "schedule team meeting next week"
   Smart processing: Extract "Team meeting" as title, set start_date to next Monday in YYYY-MM-DD format
+
+- Input: "call client at 3pm"
+  Smart processing: Extract "Call client" as title, set start_date to today, set start_time to "15:00:00"
 
 CRITICAL: NEVER use combined datetime formats like "2025-01-15T14:30:00". Always use separate date and time fields.
 
@@ -225,6 +229,10 @@ Be intelligent, contextual, and user-friendly while maintaining strict JSON outp
     # Preserve original session_name for implicit team tasks
     if llm_output.get('session_name') is None and not llm_output.get('is_private'):
         llm_output.pop('session_name', None)
+
+    # Smart fallback: if start_time is set but start_date is missing, assume today
+    if llm_output.get('start_time') and not llm_output.get('start_date'):
+        llm_output['start_date'] = date.today().isoformat()
 
     updated_state.update(llm_output)
 
