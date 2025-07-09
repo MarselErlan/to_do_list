@@ -196,21 +196,17 @@ Remember: Extract what you can, ask clarification for missing critical details o
 
     return updated_state
 
-def should_continue(state: TaskCreationState) -> Literal["conversation", "task_parser", "task_creator", "clarification_requester"]:
-    """Routes to appropriate node based on input type and task completeness."""
-    # First check if it's conversation
+def route_from_router(state: TaskCreationState) -> Literal["conversation", "task_parser"]:
+    """Routes from router based on input type."""
     if state.get("is_conversation"):
         return "conversation"
-    
-    # If we have a conversation response, we're done
-    if state.get("conversation_response"):
-        return "clarification_requester"
-    
-    # Check if we have enough info to create a task
+    return "task_parser"
+
+def route_from_task_parser(state: TaskCreationState) -> Literal["task_creator", "clarification_requester"]:
+    """Routes from task parser based on task completeness."""
     title = state.get("task_title")
     if not isinstance(title, str) or not title:
         return "clarification_requester"
-    
     return "task_creator"
 
 def create_task_in_db(state: TaskCreationState, config: dict):
@@ -287,36 +283,24 @@ def create_graph():
     # Set entry point
     graph.set_entry_point("router")
     
-    # Add conditional edges from router
+    # Router routes to either conversation or task_parser
     graph.add_conditional_edges(
         "router",
-        should_continue,
+        route_from_router,
         {
             "conversation": "conversation",
-            "task_parser": "task_parser", 
-            "task_creator": "task_creator",
-            "clarification_requester": "clarification_requester"
+            "task_parser": "task_parser"
         }
     )
     
-    # Add edges from conversation and task_parser to conditional router
-    graph.add_conditional_edges(
-        "conversation", 
-        should_continue,
-        {
-            "conversation": "conversation",
-            "task_parser": "task_parser",
-            "task_creator": "task_creator", 
-            "clarification_requester": "clarification_requester"
-        }
-    )
+    # Conversation goes directly to end (returns clarification_questions)
+    graph.add_edge("conversation", "clarification_requester")
     
+    # Task parser routes to either task creation or clarification
     graph.add_conditional_edges(
         "task_parser",
-        should_continue,
+        route_from_task_parser,
         {
-            "conversation": "conversation",
-            "task_parser": "task_parser",
             "task_creator": "task_creator",
             "clarification_requester": "clarification_requester"
         }
