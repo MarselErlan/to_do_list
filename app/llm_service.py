@@ -66,10 +66,14 @@ def parse_user_request(state: TaskCreationState, config: dict):
 - The user is a member of the following team workspaces: {team_list_str}.
 - Today's date is {{today}}.
 
+# CRITICAL: ALWAYS RETURN VALID JSON
+You MUST ALWAYS return a valid JSON object. Even if the user says "hello", "hi", or other greetings, you must respond with the JSON structure below asking for clarification about what task they want to create.
+
 # Instructions
 1.  **Identify the Task**: First, figure out what the user wants to do. The task title is the core action or subject of the request.
     - Example 1: If the user says, "i need to call bro so make task and make it in team", the `task_title` is "Call bro".
     - Example 2: If the user says, "remind me to schedule the quarterly review", the `task_title` is "Schedule the quarterly review".
+    - Example 3: If the user says, "hello" or "hi", the `task_title` is null and you should ask for clarification.
 2.  **Determine the Workspace**:
     - The user may want the task in a specific team workspace. Look for team names in the user's request. The name might not be an exact match. Use the most likely team from the list provided.
     - {single_team_instructions}
@@ -88,7 +92,7 @@ def parse_user_request(state: TaskCreationState, config: dict):
     - `is_private`: Set to `true` for personal tasks.
     - `clarification_questions`: A list of questions to ask the user if any information is missing.
 
-Your response MUST be a JSON object matching the structure above.
+Your response MUST be a JSON object matching the structure above. Never return plain text, always return valid JSON.
 """
     
     parser = JsonOutputParser(pydantic_object=TaskDetails)

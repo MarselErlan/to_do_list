@@ -17,6 +17,9 @@ os.environ["MAIL_STARTTLS"] = "True"
 os.environ["MAIL_SSL_TLS"] = "False"
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
 os.environ["SUPPRESS_SEND"] = "True" # Ensure emails are suppressed during testing
+os.environ["ALGORITHM"] = "HS256"
+os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "30"
+os.environ["OPENAI_API_KEY"] = "test-key"
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
