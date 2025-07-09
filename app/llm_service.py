@@ -105,7 +105,7 @@ def handle_conversation(state: TaskCreationState, config: dict):
     }
 
 def parse_task_request(state: TaskCreationState, config: dict):
-    """Parses task creation requests with a clean, focused prompt."""
+    """Parses task creation requests with a completely template-free prompt."""
     history = state.get("history", [])
     session_name = state.get("session_name") or "Private"
     team_names = state.get("team_names") or []
@@ -114,54 +114,76 @@ def parse_task_request(state: TaskCreationState, config: dict):
     
     single_team_instructions = ""
     if len(team_names) == 1:
-        single_team_instructions = f"- The user is only in one team: '{team_names[0]}'. If the user says to create a task 'for the team' or similar without specifying a name, you MUST assume it is for this team and return `session_name: \"{team_names[0]}\"`."
+        single_team_instructions = f"- The user is only in one team: '{team_names[0]}'. If the user says to create a task 'for the team' or similar without specifying a name, you MUST assume it is for this team and return session_name: {team_names[0]}."
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
     
+    # Template-free system prompt - NO JSON examples, NO curly braces
     system_prompt = f"""You are a task planning assistant. Extract task details from user input and return ONLY valid JSON.
 
-# Context
-- Current workspace: '{session_name}'
+CONTEXT:
+- Current workspace: {session_name}
 - Available teams: {team_list_str}
 - Today's date: {date.today()}
 
-# CRITICAL: JSON-ONLY OUTPUT
+CRITICAL INSTRUCTIONS:
 - Return ONLY a valid JSON object
 - NO text before or after JSON
 - NO comments in JSON
 - NO conversational text outside JSON structure
 
-# Task Analysis Rules
-1. **Required**: task_title (always needed)
-2. **Important for scheduling**: start_date, end_date, start_time, end_time
-3. **Team detection**: {single_team_instructions}
-4. **Privacy**: is_private (true for personal tasks), is_global_public (company-wide)
+TASK ANALYSIS RULES:
+1. Required: task_title (always needed)
+2. Important for scheduling: start_date, end_date, start_time, end_time
+3. Team detection: {single_team_instructions}
+4. Privacy: is_private (true for personal tasks), is_global_public (company-wide)
 
-# Smart Defaults
-- Personal tasks (groceries, exercise) → is_private: true
-- Work tasks with teams available → suggest appropriate team
-- Time-sensitive tasks → ask for dates/times
-- Simple todos → minimal fields needed
+SMART DEFAULTS:
+- Personal tasks (groceries, exercise) -> is_private: true
+- Work tasks with teams available -> suggest appropriate team
+- Time-sensitive tasks -> ask for dates/times
+- Simple todos -> minimal fields needed
 
-# Output Structure
-{{"task_title": "string or null", "description": "string or null", "start_date": "YYYY-MM-DD or null", "end_date": "YYYY-MM-DD or null", "start_time": "HH:MM:SS or null", "end_time": "HH:MM:SS or null", "session_name": "team name or null", "is_private": "boolean or null", "is_global_public": "boolean or null", "clarification_questions": ["array of questions if needed"], "is_complete": false}}
+The JSON object should contain these fields when available:
+- task_title: string or null
+- description: string or null  
+- start_date: YYYY-MM-DD format or null
+- end_date: YYYY-MM-DD format or null
+- start_time: HH:MM:SS format or null
+- end_time: HH:MM:SS format or null
+- session_name: team name or null
+- is_private: boolean or null
+- is_global_public: boolean or null
+- clarification_questions: array of questions if needed
+- is_complete: false
 
-Remember: Extract what you can, ask clarification for missing critical details only."""
+Extract what you can, ask clarification for missing critical details only."""
 
     parser = JsonOutputParser(pydantic_object=TaskDetails)
     
-    # Build conversation context
-    prompt_messages = [("system", system_prompt)]
+    # Build conversation context without any template variables
+    messages = []
+    messages.append(("system", system_prompt))
+    
     for msg in history:
         if msg["sender"] == "user":
-            prompt_messages.append(("user", msg["text"]))
+            messages.append(("user", msg["text"]))
         elif msg["sender"] == "ai":
-            prompt_messages.append(("ai", msg["text"]))
+            messages.append(("ai", msg["text"]))
 
-    prompt = ChatPromptTemplate.from_messages(prompt_messages)
+    # Use direct prompt creation to avoid template processing
+    prompt = ChatPromptTemplate.from_messages(messages)
     chain = prompt | llm | parser
     
-    response_data = chain.invoke({})
+    try:
+        response_data = chain.invoke({})
+    except Exception as e:
+        # Fallback if chain fails
+        return {
+            "is_complete": False,
+            "clarification_questions": ["I encountered an error processing your request. Could you please rephrase your task?"],
+            "user_query": history[-1]["text"] if history else ""
+        }
 
     # Update state with extracted details
     updated_state = state.copy()
