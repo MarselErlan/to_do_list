@@ -6,12 +6,15 @@ Integrates Google Speech-to-Text, Text-to-Speech, and existing LangChain pipelin
 import json
 import base64
 import asyncio
+import tempfile
+import os
 from typing import Dict, Any, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 from google.cloud import speech, texttospeech
 from app.llm_service import create_graph
 from app.database import get_db
 from app.models import User, Session
+from app.config import settings
 
 
 class VoiceAssistantService:
@@ -26,20 +29,66 @@ class VoiceAssistantService:
         if speech_client is not None:
             self.speech_client = speech_client
         else:
-            try:
-                self.speech_client = speech.SpeechClient()
-            except Exception as e:
-                print(f"Warning: Could not initialize speech client: {e}")
-                self.speech_client = None
+            self.speech_client = self._initialize_speech_client()
         
         if tts_client is not None:
             self.tts_client = tts_client
         else:
-            try:
-                self.tts_client = texttospeech.TextToSpeechClient()
-            except Exception as e:
-                print(f"Warning: Could not initialize TTS client: {e}")
-                self.tts_client = None
+            self.tts_client = self._initialize_tts_client()
+    
+    def _initialize_speech_client(self):
+        """Initialize Google Cloud Speech client with proper credential handling."""
+        try:
+            # If credentials JSON is provided as string (for Railway deployment)
+            if settings.GOOGLE_CLOUD_CREDENTIALS_JSON:
+                # Create temporary file with credentials
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                    f.write(settings.GOOGLE_CLOUD_CREDENTIALS_JSON)
+                    temp_creds_path = f.name
+                
+                # Set environment variable for Google Cloud client
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = temp_creds_path
+                return speech.SpeechClient()
+            
+            # If credentials file path is provided
+            elif settings.GOOGLE_APPLICATION_CREDENTIALS:
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = settings.GOOGLE_APPLICATION_CREDENTIALS
+                return speech.SpeechClient()
+            
+            # Try default credentials
+            else:
+                return speech.SpeechClient()
+                
+        except Exception as e:
+            print(f"Warning: Could not initialize speech client: {e}")
+            return None
+    
+    def _initialize_tts_client(self):
+        """Initialize Google Cloud Text-to-Speech client with proper credential handling."""
+        try:
+            # If credentials JSON is provided as string (for Railway deployment)
+            if settings.GOOGLE_CLOUD_CREDENTIALS_JSON:
+                # Create temporary file with credentials
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                    f.write(settings.GOOGLE_CLOUD_CREDENTIALS_JSON)
+                    temp_creds_path = f.name
+                
+                # Set environment variable for Google Cloud client
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = temp_creds_path
+                return texttospeech.TextToSpeechClient()
+            
+            # If credentials file path is provided
+            elif settings.GOOGLE_APPLICATION_CREDENTIALS:
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = settings.GOOGLE_APPLICATION_CREDENTIALS
+                return texttospeech.TextToSpeechClient()
+            
+            # Try default credentials
+            else:
+                return texttospeech.TextToSpeechClient()
+                
+        except Exception as e:
+            print(f"Warning: Could not initialize TTS client: {e}")
+            return None
     
     def get_speech_config(self) -> speech.RecognitionConfig:
         """Get speech recognition configuration."""

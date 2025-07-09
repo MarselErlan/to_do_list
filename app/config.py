@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     MAIL_SSL_TLS: bool = False
     SUPPRESS_SEND: bool = False
 
+    # Google Cloud Voice Assistant Settings
+    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None  # Path to service account JSON
+    GOOGLE_CLOUD_PROJECT: Optional[str] = None  # Your GCP project ID
+    GOOGLE_CLOUD_CREDENTIALS_JSON: Optional[str] = None  # JSON content as string (for Railway)
+
     class Config:
         env_file = ".env"
         extra='ignore'
