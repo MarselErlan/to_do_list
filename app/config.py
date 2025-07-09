@@ -10,11 +10,14 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
-    # LangSmith Configuration
-    LANGCHAIN_TRACING_V2: bool = False
+    # LangSmith Configuration - Updated for LangGraph Architecture
+    LANGCHAIN_TRACING_V2: bool = True  # Enable tracing for LangGraph
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
     LANGCHAIN_API_KEY: str | None = None
-    LANGCHAIN_PROJECT: str | None = None
+    LANGCHAIN_PROJECT: str = "TaskFlow-TodoList-Production"  # Project name for this app
+    
+    # LangGraph specific tracing
+    LANGCHAIN_SESSION: str | None = None  # Optional: for grouping traces
     
     SENDGRID_API_KEY: str | None = None
 
