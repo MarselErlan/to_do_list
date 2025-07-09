@@ -9,9 +9,13 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "default-secret-key"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    
+    # LangSmith Configuration
     LANGCHAIN_TRACING_V2: bool = False
+    LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
     LANGCHAIN_API_KEY: str | None = None
     LANGCHAIN_PROJECT: str | None = None
+    
     SENDGRID_API_KEY: str | None = None
 
     # Mail settings
@@ -25,6 +29,7 @@ class Settings(BaseSettings):
     SUPPRESS_SEND: bool = False
 
     class Config:
+        env_file = ".env"
         extra='ignore'
 
 settings = Settings() 
