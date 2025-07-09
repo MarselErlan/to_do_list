@@ -1,7 +1,8 @@
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List
+import os
 from datetime import date, datetime, timedelta
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.routing import APIRoute
@@ -72,7 +73,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
@@ -453,57 +454,85 @@ def read_users_me(current_user: models.User = Depends(get_current_user)):
 
 # --- Email Verification Endpoints ---
 
-@app.post("/auth/request-verification", response_model=schemas.VerificationRequestResponse)
-async def request_verification_code(
-    request: schemas.EmailVerificationRequest, 
-    db: Session = Depends(get_db)
-):
-    # Check if user already exists
-    db_user = crud.get_user_by_email(db, email=request.email)
-    if db_user:
-        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+@app.post("/auth/request-verification")
+async def request_verification(request: schemas.EmailVerificationRequest, db: Session = Depends(get_db)):
+    """
+    Request a verification code for email registration.
+    """
+    # 1. Check if email is already registered
+    existing_user = crud.get_user_by_email(db, email=request.email)
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Create or update the verification code and get attempts left
+    # 2. Generate and store verification code (with rate limiting)
     plain_code, attempts_left = crud.create_verification_code(db, email=request.email)
-
+    
     if plain_code is None:
-        # This means the attempt limit has been reached
-        raise HTTPException(
-            status_code=429, 
-            detail=f"Too many verification attempts. Please wait 5 hours before trying again."
-        )
+        raise HTTPException(status_code=429, detail="Too many verification attempts. Please wait 5 hours before trying again.")
 
-    await send_verification_email(email_to=request.email, code=plain_code)
+    try:
+        await send_verification_email(email_to=request.email, code=plain_code)
+    except Exception as e:
+        # logger.error(f"Failed to send verification email to {request.email}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send verification email.")
+
     return {"message": "Verification code sent successfully", "attempts_left": attempts_left}
 
-@app.post("/auth/forgot-password", response_model=schemas.PasswordResetRequestResponse)
-async def forgot_password(
-    request: schemas.EmailVerificationRequest,
-    db: Session = Depends(get_db)
-):
+@app.post("/auth/request-password-reset")
+async def request_password_reset(request: schemas.EmailVerificationRequest, db: Session = Depends(get_db)):
     """
-    Request a password reset code.
-    This will check for a user and enforce a rate limit.
+    Request a password reset code for an existing user.
+    """
+    # 1. Check if user exists
+    user = crud.get_user_by_email(db, email=request.email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 2. Generate and store verification code (with rate limiting)
+    plain_code, attempts_left = crud.create_verification_code(db, email=request.email)
+    
+    if plain_code is None:
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
+    try:
+        await send_verification_email(email_to=request.email, code=plain_code)
+    except Exception as e:
+        # logger.error(f"Failed to send password reset email to {request.email}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send password reset email.")
+
+    return {"message": "Password reset code sent", "username": user.username}
+
+@app.post("/auth/forgot-password")
+async def forgot_password(request: schemas.EmailVerificationRequest, db: Session = Depends(get_db)):
+    """
+    Request a password reset code for an existing user (alias for request_password_reset).
     """
     # 1. Check if user exists
     user = crud.get_user_by_email(db, email=request.email)
     if not user:
         raise HTTPException(status_code=404, detail="User with this email not found")
 
-    # 2. Check for rate-limiting
+    # 2. Check for existing unexpired verification code (stricter rate limiting for password reset)
     existing_code = crud.get_verification_code(db, email=request.email)
-    if existing_code:
+    if existing_code and existing_code.expires_at > datetime.utcnow():
         time_since_creation = datetime.utcnow() - existing_code.created_at
-        if time_since_creation < timedelta(hours=5):
-            wait_time = timedelta(hours=5) - time_since_creation
-            raise HTTPException(
-                status_code=429,
-                detail=f"Please wait before requesting another code. Try again in {wait_time}."
-            )
+        wait_time = timedelta(hours=5) - time_since_creation
+        raise HTTPException(
+            status_code=429,
+            detail=f"Please wait before requesting another code. Try again in {wait_time}."
+        )
 
-    # 3. Create and send new code
-    code = crud.create_verification_code(db, email=request.email)
-    await send_verification_email(email_to=request.email, code=code)
+    # 3. Generate and store verification code
+    plain_code, attempts_left = crud.create_verification_code(db, email=request.email)
+    
+    if plain_code is None:
+        raise HTTPException(status_code=429, detail="Too many verification attempts. Please wait 5 hours before trying again.")
+
+    try:
+        await send_verification_email(email_to=request.email, code=plain_code)
+    except Exception as e:
+        # logger.error(f"Failed to send password reset email to {request.email}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send password reset email.")
 
     return {"message": "Password reset code sent", "username": user.username}
 
@@ -560,7 +589,7 @@ def register_user(user_data: schemas.UserCreateAndVerify, db: Session = Depends(
     new_user = crud.create_user(db=db, user=user_data)
     
     # 4. Return an access token
-    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": new_user.username}, expires_delta=access_token_expires
     )
@@ -570,6 +599,9 @@ def register_user(user_data: schemas.UserCreateAndVerify, db: Session = Depends(
 
 @app.post("/token", response_model=schemas.Token)
 def login_for_access_token(db: Session = Depends(get_db), form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    Handles token generation for user authentication.
+    """
     user = crud.authenticate_user(db, username=form_data.username, password=form_data.password)
     if not user:
         raise HTTPException(
@@ -577,7 +609,8 @@ def login_for_access_token(db: Session = Depends(get_db), form_data: OAuth2Passw
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    # Create access token for the user
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
