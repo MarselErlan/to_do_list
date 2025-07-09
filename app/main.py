@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List
@@ -15,6 +15,7 @@ from .database import SessionLocal, engine, get_db, init_db
 from .security import create_access_token, verify_password, get_password_hash
 from .config import settings
 from .email import send_verification_email
+from .voice_assistant import VoiceAssistant
 
 # Global variable to hold the graph instance
 task_creation_graph = None
@@ -174,6 +175,13 @@ def chat_create_task(
 @app.get("/health", status_code=200)
 def health_check():
     return {"status": "ok"}
+
+# Voice Assistant WebSocket Endpoint
+@app.websocket("/ws/voice")
+async def voice_assistant_websocket(websocket: WebSocket):
+    """WebSocket endpoint for voice assistant functionality."""
+    voice_assistant = VoiceAssistant()
+    await voice_assistant.websocket_endpoint(websocket)
 
 @app.post("/todos/", response_model=schemas.Todo)
 def create_todo_endpoint(todo: schemas.TodoCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
