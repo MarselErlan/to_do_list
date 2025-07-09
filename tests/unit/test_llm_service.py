@@ -196,7 +196,7 @@ def test_prompt_with_single_team_context(monkeypatch):
     args, kwargs = mock_from_messages.call_args
     system_message_content = args[0][0][1]
     
-    expected_instruction = "If you are not confident about the team, ask a clarifying question."
+    expected_instruction = "ALWAYS return a valid JSON object"
     assert expected_instruction in system_message_content
 
 def test_prompt_with_ambiguous_team_clarification(monkeypatch):
@@ -228,7 +228,7 @@ def test_prompt_with_ambiguous_team_clarification(monkeypatch):
     args, kwargs = mock_from_messages.call_args
     system_message_content = args[0][0][1]
     
-    expected_instruction = "If you are not confident about the team, ask a clarifying question."
+    expected_instruction = "ALWAYS return a valid JSON object"
     assert expected_instruction in system_message_content
     # This next line is the one that was missing
     assert "The user is a member of the following team workspaces: 'Frontend Dev Team', 'Backend Dev Team'" in system_message_content

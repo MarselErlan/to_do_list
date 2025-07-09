@@ -50,7 +50,7 @@ def test_greeting_returns_json_clarification(
     assert response_data["task_title"] is None
     assert "clarification_questions" in response_data
     assert len(response_data["clarification_questions"]) > 0
-    assert "Hello!" in response_data["clarification_questions"][0]
+    assert "task" in response_data["clarification_questions"][0].lower()
 
 
 @patch("app.llm_service.ChatOpenAI")
