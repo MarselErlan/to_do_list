@@ -123,7 +123,7 @@ def parse_task_request(state: TaskCreationState, config: dict):
 # Context
 - Current workspace: '{session_name}'
 - Available teams: {team_list_str}
-- Today's date: {{today}}
+- Today's date: {date.today()}
 
 # CRITICAL: JSON-ONLY OUTPUT
 - Return ONLY a valid JSON object
@@ -144,26 +144,14 @@ def parse_task_request(state: TaskCreationState, config: dict):
 - Simple todos → minimal fields needed
 
 # Output Structure
-{{{{
-  "task_title": "string or null",
-  "description": "string or null", 
-  "start_date": "YYYY-MM-DD or null",
-  "end_date": "YYYY-MM-DD or null",
-  "start_time": "HH:MM:SS or null",
-  "end_time": "HH:MM:SS or null",
-  "session_name": "team name or null",
-  "is_private": "boolean or null",
-  "is_global_public": "boolean or null",
-  "clarification_questions": ["array of questions if needed"],
-  "is_complete": false
-}}}}
+{{"task_title": "string or null", "description": "string or null", "start_date": "YYYY-MM-DD or null", "end_date": "YYYY-MM-DD or null", "start_time": "HH:MM:SS or null", "end_time": "HH:MM:SS or null", "session_name": "team name or null", "is_private": "boolean or null", "is_global_public": "boolean or null", "clarification_questions": ["array of questions if needed"], "is_complete": false}}
 
 Remember: Extract what you can, ask clarification for missing critical details only."""
 
     parser = JsonOutputParser(pydantic_object=TaskDetails)
     
     # Build conversation context
-    prompt_messages = [("system", system_prompt.format(today=date.today()))]
+    prompt_messages = [("system", system_prompt)]
     for msg in history:
         if msg["sender"] == "user":
             prompt_messages.append(("user", msg["text"]))
