@@ -6,6 +6,9 @@ from typing import Optional
 class Settings(BaseSettings):
     DATABASE_URL: str
     OPENAI_API_KEY: str
+    SECRET_KEY: str = "default-secret-key"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_API_KEY: str | None = None
     LANGCHAIN_PROJECT: str | None = None
@@ -22,7 +25,6 @@ class Settings(BaseSettings):
     SUPPRESS_SEND: bool = False
 
     class Config:
-        env_file = ".env"
         extra='ignore'
 
 settings = Settings() 
