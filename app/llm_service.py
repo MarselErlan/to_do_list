@@ -105,7 +105,7 @@ def handle_conversation(state: TaskCreationState, config: dict):
     }
 
 def parse_task_request(state: TaskCreationState, config: dict):
-    """Parses task creation requests with a completely template-free prompt."""
+    """Parses task creation requests with an enhanced intelligent prompt."""
     history = state.get("history", [])
     session_name = state.get("session_name") or "Private"
     team_names = state.get("team_names") or []
@@ -118,46 +118,72 @@ def parse_task_request(state: TaskCreationState, config: dict):
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
     
-    # Template-free system prompt - NO JSON examples, NO curly braces
-    system_prompt = f"""You are a task planning assistant. Extract task details from user input and return ONLY valid JSON.
+    # Enhanced intelligent system prompt - template-free but smart
+    system_prompt = f"""You are an intelligent task planning assistant. Your job is to understand user intent and extract task details to return ONLY valid JSON.
 
 CONTEXT:
 - Current workspace: {session_name}
 - Available teams: {team_list_str}
-- Today's date: {date.today()}
+- Current date and time: {date.today()}
 
-CRITICAL INSTRUCTIONS:
-- Return ONLY a valid JSON object
+INTELLIGENCE REQUIREMENTS:
+
+1. TIME PARSING EXPERTISE:
+   - "after 1 hour" -> calculate start_time as current time + 1 hour
+   - "in 15 minutes" -> calculate start_time as current time + 15 minutes  
+   - "tomorrow morning" -> set start_date to tomorrow, start_time to 09:00:00
+   - "next week" -> set start_date to next Monday
+   - "at 3pm" -> set start_time to 15:00:00
+   - Be smart about relative time expressions
+
+2. TASK TITLE EXTRACTION:
+   - "call Ruslan after 1 hour" -> task_title: "Call Ruslan"
+   - "remind me to buy groceries" -> task_title: "Buy groceries"  
+   - "schedule meeting with team" -> task_title: "Meeting with team"
+   - Extract the core action, not the timing instruction
+
+3. CONTEXT UNDERSTANDING:
+   - Personal tasks (groceries, personal calls) -> is_private: true
+   - Work tasks with teams available -> suggest appropriate team
+   - Time-sensitive requests -> ALWAYS set appropriate time fields
+   - Casual conversation -> return clarification_questions with friendly response
+
+4. SMART PROCESSING:
+   {single_team_instructions}
+   - If user says "hello" or greetings, respond warmly but ask what task they need
+   - If task details are clear, extract them intelligently
+   - If ambiguous, ask specific clarifying questions
+
+CRITICAL OUTPUT REQUIREMENTS:
+- Return ONLY valid JSON object
 - NO text before or after JSON
 - NO comments in JSON
 - NO conversational text outside JSON structure
 
-TASK ANALYSIS RULES:
-1. Required: task_title (always needed)
-2. Important for scheduling: start_date, end_date, start_time, end_time
-3. Team detection: {single_team_instructions}
-4. Privacy: is_private (true for personal tasks), is_global_public (company-wide)
+JSON FIELDS TO POPULATE:
+- task_title: The main action/task (required for task creation)
+- description: Additional details if provided
+- start_date: YYYY-MM-DD format if date mentioned
+- end_date: YYYY-MM-DD format if end date mentioned  
+- start_time: HH:MM:SS format if specific time mentioned
+- end_time: HH:MM:SS format if duration/end time mentioned
+- session_name: team name if work-related or specified
+- is_private: true for personal tasks, false for team tasks
+- is_global_public: true only if explicitly company-wide
+- clarification_questions: array of specific questions if info missing
+- is_complete: false (always false, system will set true when task created)
 
-SMART DEFAULTS:
-- Personal tasks (groceries, exercise) -> is_private: true
-- Work tasks with teams available -> suggest appropriate team
-- Time-sensitive tasks -> ask for dates/times
-- Simple todos -> minimal fields needed
+EXAMPLES OF INTELLIGENT PROCESSING:
+- Input: "call Ruslan after 1 hour"
+  Smart processing: Extract "Call Ruslan" as title, calculate start_time as now + 1 hour
+  
+- Input: "remind me to buy groceries tomorrow"  
+  Smart processing: Extract "Buy groceries" as title, set start_date to tomorrow, is_private true
 
-The JSON object should contain these fields when available:
-- task_title: string or null
-- description: string or null  
-- start_date: YYYY-MM-DD format or null
-- end_date: YYYY-MM-DD format or null
-- start_time: HH:MM:SS format or null
-- end_time: HH:MM:SS format or null
-- session_name: team name or null
-- is_private: boolean or null
-- is_global_public: boolean or null
-- clarification_questions: array of questions if needed
-- is_complete: false
+- Input: "schedule team meeting next week"
+  Smart processing: Extract "Team meeting" as title, set start_date to next Monday, suggest team
 
-Extract what you can, ask clarification for missing critical details only."""
+Be intelligent, contextual, and user-friendly while maintaining strict JSON output format."""
 
     parser = JsonOutputParser(pydantic_object=TaskDetails)
     
