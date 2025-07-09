@@ -178,10 +178,43 @@ def health_check():
 
 # Voice Assistant WebSocket Endpoint
 @app.websocket("/ws/voice")
-async def voice_assistant_websocket(websocket: WebSocket):
-    """WebSocket endpoint for voice assistant functionality."""
-    voice_assistant = VoiceAssistant()
-    await voice_assistant.websocket_endpoint(websocket)
+async def voice_assistant_websocket(websocket: WebSocket, token: str = Query(...)):
+    """WebSocket endpoint for voice assistant functionality with authentication."""
+    try:
+        # Authenticate user from token
+        credentials_exception = HTTPException(
+            status_code=401,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            username: str = payload.get("sub")
+            if username is None:
+                await websocket.close(code=4001, reason="Invalid token")
+                return
+        except JWTError:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+        
+        # Get user from database
+        db = SessionLocal()
+        try:
+            user = crud.get_user_by_username(db, username=username)
+            if user is None:
+                await websocket.close(code=4001, reason="User not found")
+                return
+        finally:
+            db.close()
+        
+        # Initialize voice assistant with user context
+        voice_assistant = VoiceAssistant()
+        await voice_assistant.websocket_endpoint(websocket, user_id=user.id)
+        
+    except Exception as e:
+        print(f"WebSocket authentication error: {e}")
+        await websocket.close(code=4002, reason="Authentication failed")
 
 @app.post("/todos/", response_model=schemas.Todo)
 def create_todo_endpoint(todo: schemas.TodoCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
