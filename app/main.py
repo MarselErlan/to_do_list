@@ -96,55 +96,79 @@ def chat_create_task(
 ):
     """
     Handles a conversational request to create a to-do task.
+    ALWAYS returns valid JSON to prevent CORS errors.
     """
     if not task_creation_graph:
         raise HTTPException(status_code=500, detail="Graph not initialized")
 
-    session_name = "Private" # Default to private
-    if request.current_session_id:
-        session = crud.get_session_by_id_for_user(db, session_id=request.current_session_id, user_id=current_user.id)
-        if session and session.name:
-            session_name = session.name
+    try:
+        session_name = "Private" # Default to private
+        if request.current_session_id:
+            session = crud.get_session_by_id_for_user(db, session_id=request.current_session_id, user_id=current_user.id)
+            if session and session.name:
+                session_name = session.name
 
-    # Get all team names for the user to provide as context to the LLM
-    all_sessions = crud.get_sessions_for_user(db, user_id=current_user.id)
-    team_names = [s.name for s in all_sessions if s.name]
+        # Get all team names for the user to provide as context to the LLM
+        all_sessions = crud.get_sessions_for_user(db, user_id=current_user.id)
+        team_names = [s.name for s in all_sessions if s.name]
 
-    # The user's most recent message is the primary query for this turn.
-    user_query = ""
-    if request.history:
-        last_message = request.history[-1]
-        if last_message.sender == 'user':
-            user_query = last_message.text
+        # The user's most recent message is the primary query for this turn.
+        user_query = ""
+        if request.history:
+            last_message = request.history[-1]
+            if last_message.sender == 'user':
+                user_query = last_message.text
 
-    # Initial state for the graph, ensuring all necessary fields are present
-    initial_state = {
-        "user_query": user_query,
-        "history": [msg.model_dump() for msg in request.history],
-        "session_name": session_name,
-        "team_names": team_names,
-        "task_title": None,
-        "description": None,
-        "start_date": None,
-        "end_date": None,
-        "start_time": None,
-        "end_time": None,
-        "is_complete": False,
-        "clarification_questions": [],
-    }
-    
-    # Configuration to pass to the graph
-    config = {
-        "configurable": {
-            "db_session": db,
-            "owner_id": current_user.id
+        # Initial state for the graph, ensuring all necessary fields are present
+        initial_state = {
+            "user_query": user_query,
+            "history": [msg.model_dump() for msg in request.history],
+            "session_name": session_name,
+            "team_names": team_names,
+            "task_title": None,
+            "description": None,
+            "start_date": None,
+            "end_date": None,
+            "start_time": None,
+            "end_time": None,
+            "is_complete": False,
+            "clarification_questions": [],
         }
-    }
+        
+        # Configuration to pass to the graph
+        config = {
+            "configurable": {
+                "db_session": db,
+                "owner_id": current_user.id
+            }
+        }
 
-    # Invoke the graph and return the final state
-    final_state = task_creation_graph.invoke(initial_state, config=config)
-    
-    return final_state
+        # Invoke the graph and return the final state
+        final_state = task_creation_graph.invoke(initial_state, config=config)
+        
+        # Ensure response is always valid JSON with required fields
+        if not isinstance(final_state, dict):
+            final_state = {"is_complete": False, "clarification_questions": ["Unexpected response format"]}
+        
+        # Guarantee required fields exist
+        if "is_complete" not in final_state:
+            final_state["is_complete"] = False
+        
+        return final_state
+        
+    except Exception as e:
+        # CRITICAL: Always return valid JSON, never let exceptions break JSON format
+        import traceback
+        error_msg = f"An internal error occurred: {str(e)}"
+        print(f"Chat endpoint error: {error_msg}")
+        print(f"Traceback: {traceback.format_exc()}")
+        
+        return {
+            "is_complete": False,
+            "clarification_questions": [error_msg],
+            "task_title": None,
+            "user_query": user_query if 'user_query' in locals() else ""
+        }
 
 
 @app.get("/health", status_code=200)
