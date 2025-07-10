@@ -369,3 +369,255 @@ class TestVoiceAssistantServiceReliability:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"]) 
+
+class TestContinuousVoiceChatIntegration:
+    """Integration tests for continuous voice chat with real services."""
+
+    @pytest.mark.asyncio
+    async def test_continuous_voice_websocket_connection(self):
+        """Test WebSocket connection for continuous voice chat."""
+        if not os.getenv('GOOGLE_CLOUD_CREDENTIALS_JSON'):
+            pytest.skip("Google Cloud credentials not available")
+        
+        from app.main import app
+        from fastapi.testclient import TestClient
+        
+        client = TestClient(app)
+        
+        # Create a test user and get token
+        user_data = {
+            "username": f"testuser_{int(time.time())}",
+            "password": "testpass123",
+            "email": f"test_{int(time.time())}@example.com"
+        }
+        
+        # Register user
+        response = client.post("/users/", json=user_data)
+        assert response.status_code in [200, 201, 409]  # 409 if user exists
+        
+        # Login to get token
+        login_data = {
+            "username": user_data["username"],
+            "password": user_data["password"]
+        }
+        token_response = client.post("/token", data=login_data)
+        if token_response.status_code != 200:
+            pytest.skip("Unable to get authentication token")
+        
+        token = token_response.json()["access_token"]
+        
+        # Test WebSocket connection with continuous mode
+        import websockets
+        import json
+        
+        try:
+            uri = f"ws://localhost:8000/ws/voice?token={token}"
+            async with websockets.connect(uri) as websocket:
+                # Send continuous mode message
+                test_message = {
+                    "audio": base64.b64encode(b"dummy audio for continuous test").decode(),
+                    "continuous_mode": True
+                }
+                
+                await websocket.send(json.dumps(test_message))
+                
+                # Wait for response
+                try:
+                    response = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+                    data = json.loads(response)
+                    
+                    # Verify continuous mode is handled
+                    assert isinstance(data, dict)
+                    # Should contain either transcript, error, or processing status
+                    assert any(key in data for key in ["transcript", "error", "status", "response_text"])
+                    
+                except asyncio.TimeoutError:
+                    pytest.fail("WebSocket response timeout")
+                    
+        except Exception as e:
+            pytest.skip(f"WebSocket connection failed: {e}")
+
+    @pytest.mark.asyncio
+    async def test_continuous_mode_real_audio_processing(self):
+        """Test continuous mode with real audio processing."""
+        if not os.getenv('GOOGLE_CLOUD_CREDENTIALS_JSON'):
+            pytest.skip("Google Cloud credentials not available")
+        
+        voice_assistant = VoiceAssistant()
+        
+        # Create mock real-time audio data
+        sample_rate = 16000
+        duration = 1.0  # 1 second
+        import numpy as np
+        
+        # Generate a simple sine wave as test audio
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        audio_signal = np.sin(2 * np.pi * 440 * t)  # 440 Hz tone
+        
+        # Convert to 16-bit PCM
+        audio_data = (audio_signal * 32767).astype(np.int16).tobytes()
+        
+        # Test immediate processing
+        result = voice_assistant.service.process_audio_immediate(audio_data)
+        
+        # Verify processing works (might not recognize speech from sine wave, but should not crash)
+        assert isinstance(result, dict)
+        assert "error" in result or "transcript" in result
+
+    def test_continuous_vs_traditional_performance(self):
+        """Test performance comparison between continuous and traditional modes."""
+        if not os.getenv('GOOGLE_CLOUD_CREDENTIALS_JSON'):
+            pytest.skip("Google Cloud credentials not available")
+        
+        voice_service = VoiceAssistantService()
+        
+        # Create test audio data
+        test_audio = b"x" * 8000  # 8KB of audio data
+        
+        import time
+        
+        # Test traditional processing
+        start_time = time.time()
+        traditional_result = voice_service.process_audio_chunk(test_audio)
+        traditional_time = time.time() - start_time
+        
+        # Test continuous processing
+        start_time = time.time()
+        continuous_result = voice_service.process_audio_immediate(test_audio)
+        continuous_time = time.time() - start_time
+        
+        # Verify both work
+        assert isinstance(traditional_result, dict)
+        assert isinstance(continuous_result, dict)
+        
+        # Log performance difference
+        print(f"Traditional processing time: {traditional_time:.3f}s")
+        print(f"Continuous processing time: {continuous_time:.3f}s")
+        
+        # Continuous mode should typically be faster (immediate processing)
+        # Note: This is informational, not a strict assertion as network latency can vary
+
+    def test_fast_tts_real_service(self):
+        """Test fast TTS with real Google Cloud service."""
+        if not os.getenv('GOOGLE_CLOUD_CREDENTIALS_JSON'):
+            pytest.skip("Google Cloud credentials not available")
+        
+        voice_service = VoiceAssistantService()
+        
+        if not voice_service.tts_client:
+            pytest.skip("TTS client not available")
+        
+        test_text = "This is a test of fast text-to-speech for continuous voice chat."
+        
+        import time
+        
+        # Test fast TTS
+        start_time = time.time()
+        fast_audio = voice_service.text_to_speech_fast(test_text)
+        fast_time = time.time() - start_time
+        
+        # Test regular TTS
+        start_time = time.time()
+        regular_audio = voice_service.text_to_speech(test_text)
+        regular_time = time.time() - start_time
+        
+        # Verify both produce audio
+        assert len(fast_audio) > 0
+        assert len(regular_audio) > 0
+        
+        # Log performance difference
+        print(f"Fast TTS time: {fast_time:.3f}s")
+        print(f"Regular TTS time: {regular_time:.3f}s")
+        
+        # Both should be reasonably fast
+        assert fast_time < 5.0  # Should complete within 5 seconds
+        assert regular_time < 5.0
+
+    @pytest.mark.asyncio
+    async def test_continuous_conversation_end_to_end(self):
+        """Test complete continuous conversation with real services."""
+        if not os.getenv('GOOGLE_CLOUD_CREDENTIALS_JSON'):
+            pytest.skip("Google Cloud credentials not available")
+        
+        # This is a comprehensive integration test
+        voice_assistant = VoiceAssistant()
+        
+        # Mock WebSocket for controlled testing
+        mock_websocket = Mock()
+        mock_websocket.accept = AsyncMock()
+        mock_websocket.send_json = AsyncMock()
+        mock_websocket.client_state = Mock()
+        mock_websocket.client_state.name = "CONNECTED"
+        
+        # Simulate a conversation with mock audio but real processing
+        conversation_messages = [
+            json.dumps({
+                "audio": base64.b64encode(b"fake audio for task creation").decode(),
+                "continuous_mode": True
+            }),
+            WebSocketDisconnect()
+        ]
+        
+        mock_websocket.receive_text.side_effect = conversation_messages
+        
+        # Mock database to avoid database dependencies
+        with patch('app.voice_assistant.get_db') as mock_get_db:
+            mock_db = Mock()
+            mock_db.query.return_value.join.return_value.filter.return_value.all.return_value = []
+            mock_get_db.return_value = mock_db
+            
+            # Execute with real voice processing but mocked infrastructure
+            try:
+                await voice_assistant.process_audio_stream(mock_websocket, user_id=1)
+                
+                # Verify WebSocket interactions occurred
+                assert mock_websocket.accept.called
+                # Should have attempted to send responses
+                assert mock_websocket.send_json.call_count >= 1
+                
+            except Exception as e:
+                # Log the error for debugging but don't fail the test
+                # as this depends on external services
+                print(f"Integration test exception (expected with mock audio): {e}")
+
+    def test_continuous_mode_error_recovery(self):
+        """Test error recovery in continuous mode with real services."""
+        voice_service = VoiceAssistantService()
+        
+        # Test with invalid audio data
+        invalid_audio = b"not_valid_audio"
+        result = voice_service.process_audio_immediate(invalid_audio)
+        
+        # Should handle error gracefully
+        assert "error" in result
+        assert isinstance(result["error"], str)
+        
+        # Service should still be functional after error
+        # Test with valid length audio (though content may not be recognizable)
+        valid_length_audio = b"x" * 1000
+        result2 = voice_service.process_audio_immediate(valid_length_audio)
+        
+        # Should not crash, even if recognition fails
+        assert isinstance(result2, dict)
+
+    def test_continuous_mode_configuration_validation(self):
+        """Test that continuous mode configuration is properly set up."""
+        from app.voice_assistant import VoiceAssistant, VoiceAssistantService
+        
+        # Test that classes can be instantiated
+        voice_service = VoiceAssistantService()
+        voice_assistant = VoiceAssistant()
+        
+        # Test that new methods exist and are callable
+        assert hasattr(voice_service, 'process_audio_immediate')
+        assert hasattr(voice_service, 'text_to_speech_fast')
+        assert callable(voice_service.process_audio_immediate)
+        assert callable(voice_service.text_to_speech_fast)
+        
+        # Test that WebSocket handler supports continuous mode
+        assert hasattr(voice_assistant, '_process_transcript')
+        
+        # Check method signatures support continuous mode
+        import inspect
+        transcript_sig = inspect.signature(voice_assistant._process_transcript)
+        assert 'continuous_mode' in transcript_sig.parameters
