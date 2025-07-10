@@ -9,6 +9,7 @@ from fastapi.routing import APIRoute
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import JWTError, jwt
 from contextlib import asynccontextmanager
+import json
 
 from . import crud, models, schemas, llm_service
 from .database import SessionLocal, engine, get_db, init_db
@@ -176,6 +177,61 @@ def chat_create_task(
 def health_check():
     return {"status": "ok"}
 
+@app.get("/voice/test", status_code=200)
+def test_voice_services():
+    """Test Google Cloud Speech and TTS services."""
+    try:
+        from app.voice_assistant import VoiceAssistantService
+        
+        # Test service initialization
+        service = VoiceAssistantService()
+        
+        results = {
+            "speech_client": "not_initialized",
+            "tts_client": "not_initialized",
+            "credentials": "missing",
+            "project_id": "missing"
+        }
+        
+        # Check if clients are initialized
+        if service.speech_client is not None:
+            results["speech_client"] = "initialized"
+        
+        if service.tts_client is not None:
+            results["tts_client"] = "initialized"
+            
+        # Check environment variables
+        import os
+        if os.getenv("GOOGLE_CLOUD_CREDENTIALS_JSON"):
+            results["credentials"] = "present"
+            
+        if os.getenv("GOOGLE_CLOUD_PROJECT"):
+            results["project_id"] = os.getenv("GOOGLE_CLOUD_PROJECT")
+            
+        # Test a simple TTS operation
+        try:
+            test_audio = service.text_to_speech("Hello, this is a test.")
+            if test_audio:
+                results["tts_test"] = "success"
+            else:
+                results["tts_test"] = "failed"
+        except Exception as e:
+            results["tts_test"] = f"error: {str(e)}"
+            
+        return {
+            "status": "ok",
+            "voice_services": results,
+            "overall_status": "ready" if all(v in ["initialized", "present", "success"] or v.startswith("voice-assistant") for v in results.values()) else "not_ready"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error", 
+            "error": str(e),
+            "voice_services": None,
+            "overall_status": "error"
+        }
+
 # Voice Assistant WebSocket Endpoint
 @app.websocket("/ws/voice")
 async def voice_assistant_websocket(websocket: WebSocket, token: str = Query(...)):
@@ -192,10 +248,12 @@ async def voice_assistant_websocket(websocket: WebSocket, token: str = Query(...
             payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             username: str = payload.get("sub")
             if username is None:
-                await websocket.close(code=4001, reason="Invalid token")
+                if websocket.client_state.name != "DISCONNECTED":
+                    await websocket.close(code=4001, reason="Invalid token")
                 return
         except JWTError:
-            await websocket.close(code=4001, reason="Invalid token")
+            if websocket.client_state.name != "DISCONNECTED":
+                await websocket.close(code=4001, reason="Invalid token")
             return
         
         # Get user from database
@@ -203,7 +261,8 @@ async def voice_assistant_websocket(websocket: WebSocket, token: str = Query(...
         try:
             user = crud.get_user_by_username(db, username=username)
             if user is None:
-                await websocket.close(code=4001, reason="User not found")
+                if websocket.client_state.name != "DISCONNECTED":
+                    await websocket.close(code=4001, reason="User not found")
                 return
         finally:
             db.close()
@@ -214,7 +273,9 @@ async def voice_assistant_websocket(websocket: WebSocket, token: str = Query(...
         
     except Exception as e:
         print(f"WebSocket authentication error: {e}")
-        await websocket.close(code=4002, reason="Authentication failed")
+        # Only close if not already closed
+        if websocket.client_state.name != "DISCONNECTED":
+            await websocket.close(code=4002, reason="Authentication failed")
 
 @app.post("/todos/", response_model=schemas.Todo)
 def create_todo_endpoint(todo: schemas.TodoCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -680,3 +741,57 @@ def login_for_access_token(db: Session = Depends(get_db), form_data: OAuth2Passw
         data={"sub": user.username}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"} 
+
+@app.post("/voice/test-speech")
+async def test_speech_to_text(request: Request):
+    """Test speech-to-text conversion only."""
+    try:
+        from app.voice_assistant import VoiceAssistantService
+        import base64
+        
+        # Get audio data from request
+        body = await request.body()
+        data = json.loads(body)
+        
+        if "audio" not in data:
+            return {"error": "No audio data provided"}
+        
+        # Decode audio data
+        audio_data = base64.b64decode(data["audio"])
+        
+        # Test speech service
+        service = VoiceAssistantService()
+        
+        if service.speech_client is None:
+            return {
+                "error": "Speech client not initialized", 
+                "details": "Google Cloud credentials may be missing"
+            }
+        
+        # Process audio
+        result = service.process_audio_chunk(audio_data)
+        
+        if "error" in result:
+            return {
+                "error": "Speech processing failed",
+                "details": result["error"]
+            }
+        
+        transcript = result.get("transcript", "")
+        if not transcript:
+            return {
+                "error": "No speech detected",
+                "details": "Try speaking louder or closer to the microphone"
+            }
+            
+        return {
+            "success": True,
+            "transcript": transcript,
+            "message": "Google Cloud Speech-to-Text is working!"
+        }
+        
+    except Exception as e:
+        return {
+            "error": "Test failed",
+            "details": str(e)
+        } 
