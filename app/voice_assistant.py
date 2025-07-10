@@ -250,6 +250,33 @@ class VoiceAssistantService:
         except Exception as e:
             print(f"TTS Error: {e}")
             return b""
+    
+    def text_to_speech_fast(self, text: str) -> bytes:
+        """Convert text to speech audio with faster, more responsive settings for continuous mode."""
+        if self.tts_client is None:
+            print("TTS client not available")
+            return b""
+        
+        try:
+            synthesis_input = texttospeech.SynthesisInput(text=text)
+            voice = texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                name="en-US-Standard-D"  # Standard voice for faster processing
+            )
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+                speaking_rate=1.2,  # Slightly faster speaking rate
+                pitch=0.0,
+                volume_gain_db=0.0
+            )
+            response = self.tts_client.synthesize_speech(
+                input=synthesis_input, voice=voice, audio_config=audio_config
+            )
+            return response.audio_content
+        except Exception as e:
+            print(f"Fast TTS Error: {e}")
+            # Fallback to regular TTS
+            return self.text_to_speech(text)
 
     def add_audio_chunk(self, audio_data: bytes) -> bool:
         """Add audio chunk to buffer and return True if ready for processing."""
@@ -345,6 +372,41 @@ class VoiceAssistantService:
         """Clear the audio buffer."""
         self.audio_buffer.clear()
         print("Audio buffer cleared")
+    
+    def process_audio_immediate(self, audio_data: bytes) -> Dict[str, Any]:
+        """Process audio immediately without buffering for continuous mode."""
+        if self.speech_client is None:
+            return {"error": "Speech client not initialized - Google Cloud credentials may be missing"}
+        
+        try:
+            # Validate audio data
+            if len(audio_data) < 100:
+                return {"error": "Audio data too short"}
+            
+            # Process immediately with shorter timeout for real-time response
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Speech processing timed out")
+            
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(5)  # Shorter timeout for continuous mode
+            
+            try:
+                result = self.try_speech_recognition(audio_data, use_cache=False)
+                return result
+                
+            except Exception as e:
+                print(f"Immediate speech recognition error: {str(e)}")
+                return {"error": f"Speech recognition failed: {str(e)}"}
+            finally:
+                signal.alarm(0)
+                
+        except TimeoutError:
+            return {"error": "Speech processing timed out"}
+        except Exception as e:
+            print(f"Immediate audio processing error: {str(e)}")
+            return {"error": f"Audio processing failed: {str(e)}"}
 
     def process_with_langchain(self, transcript: str, user_id: int, session_name: str, team_names: list = None) -> Dict[str, Any]:
         """Process transcript with existing LangChain pipeline."""
@@ -461,12 +523,25 @@ class VoiceAssistant:
                                         "response_text": "I didn't hear any speech. Please try again."
                                     })
                             continue
+                        elif message["action"] == "interrupt":
+                            # Handle user interruption during assistant response
+                            await websocket.send_json({
+                                "status": "interrupted",
+                                "message": "Assistant interrupted, listening to you..."
+                            })
+                            continue
                     
                     if "audio" in message:
                         audio_data = base64.b64decode(message["audio"])
+                        continuous_mode = message.get("continuous_mode", False)
                         
-                        # Process audio chunk with new buffering system
-                        result = self.service.process_audio_chunk(audio_data)
+                        # Handle continuous mode vs traditional buffering
+                        if continuous_mode:
+                            # Process immediately for continuous voice chat
+                            result = self.service.process_audio_immediate(audio_data)
+                        else:
+                            # Use traditional buffering system
+                            result = self.service.process_audio_chunk(audio_data)
                         
                         if "error" in result:
                             # Send detailed error message to frontend
@@ -494,7 +569,7 @@ class VoiceAssistant:
                         # Handle successful transcription
                         transcript = result.get("transcript", "")
                         if transcript:
-                            await self._process_transcript(websocket, transcript, user_id, current_session_name, team_names)
+                            await self._process_transcript(websocket, transcript, user_id, current_session_name, team_names, continuous_mode)
                             
             finally:
                 db.close()
@@ -511,7 +586,7 @@ class VoiceAssistant:
             if websocket.client_state.name != "DISCONNECTED":
                 await websocket.close()
     
-    async def _process_transcript(self, websocket: WebSocket, transcript: str, user_id: int, session_name: str, team_names: list):
+    async def _process_transcript(self, websocket: WebSocket, transcript: str, user_id: int, session_name: str, team_names: list, continuous_mode: bool = False):
         """Process transcript with LangChain and send response."""
         try:
             # Process with LangChain using proper user context
@@ -533,7 +608,8 @@ class VoiceAssistant:
                 await websocket.send_json({
                     "error": response_text,
                     "response_text": response_text,
-                    "transcript": transcript
+                    "transcript": transcript,
+                    "continuous_mode": continuous_mode
                 })
                 return
             
@@ -550,7 +626,11 @@ class VoiceAssistant:
             # Convert to speech (with error handling)
             audio_response = None
             try:
-                audio_response = self.service.text_to_speech(response_text)
+                if continuous_mode:
+                    # Generate faster, shorter audio for continuous mode
+                    audio_response = self.service.text_to_speech_fast(response_text)
+                else:
+                    audio_response = self.service.text_to_speech(response_text)
             except Exception as e:
                 print(f"Text-to-speech error: {e}")
                 # Continue without audio response
@@ -560,14 +640,16 @@ class VoiceAssistant:
                 "transcript": transcript,
                 "response": base64.b64encode(audio_response).decode() if audio_response else "",
                 "response_text": response_text,
-                "llm_result": llm_result
+                "llm_result": llm_result,
+                "continuous_mode": continuous_mode
             })
             
         except Exception as e:
             print(f"Error processing transcript: {e}")
             await websocket.send_json({
                 "error": f"Processing error: {str(e)}",
-                "response_text": "Sorry, I encountered an error processing your request."
+                "response_text": "Sorry, I encountered an error processing your request.",
+                "continuous_mode": continuous_mode
             })
     
     def process_voice_command(self, audio_data: bytes, user_id: int, session_name: str, team_names: list = None) -> Dict[str, Any]:
