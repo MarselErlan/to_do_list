@@ -41,13 +41,37 @@ class VoiceAssistantService:
         try:
             from google.cloud import speech
             import os
+            import json
+            import tempfile
             
             # Check if credentials are available
-            if not os.getenv("GOOGLE_CLOUD_CREDENTIALS_JSON") and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            creds_json = os.getenv("GOOGLE_CLOUD_CREDENTIALS_JSON")
+            if not creds_json and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
                 print("No Google Cloud credentials found - speech recognition will not work")
                 return None
-                
+            
             print("Initializing Google Cloud Speech client...")
+            
+            # If credentials JSON is provided as string (Railway environment)
+            if creds_json:
+                try:
+                    # Parse and validate JSON
+                    creds_data = json.loads(creds_json)
+                    
+                    # Create temporary file with credentials
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                        json.dump(creds_data, f)
+                        temp_creds_path = f.name
+                    
+                    # Set environment variable for Google Cloud client
+                    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = temp_creds_path
+                    print(f"Set Google Cloud credentials from JSON environment variable")
+                    
+                except json.JSONDecodeError as e:
+                    print(f"Invalid JSON in GOOGLE_CLOUD_CREDENTIALS_JSON: {e}")
+                    return None
+            
+            # Initialize client
             client = speech.SpeechClient()
             
             # Test the client with a simple configuration
@@ -68,13 +92,37 @@ class VoiceAssistantService:
         try:
             from google.cloud import texttospeech
             import os
+            import json
+            import tempfile
             
             # Check if credentials are available
-            if not os.getenv("GOOGLE_CLOUD_CREDENTIALS_JSON") and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            creds_json = os.getenv("GOOGLE_CLOUD_CREDENTIALS_JSON")
+            if not creds_json and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
                 print("No Google Cloud credentials found - text-to-speech will not work")
                 return None
                 
             print("Initializing Google Cloud TTS client...")
+            
+            # If credentials JSON is provided as string (Railway environment)
+            if creds_json:
+                try:
+                    # Parse and validate JSON
+                    creds_data = json.loads(creds_json)
+                    
+                    # Create temporary file with credentials
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                        json.dump(creds_data, f)
+                        temp_creds_path = f.name
+                    
+                    # Set environment variable for Google Cloud client
+                    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = temp_creds_path
+                    print(f"Set Google Cloud credentials from JSON environment variable")
+                    
+                except json.JSONDecodeError as e:
+                    print(f"Invalid JSON in GOOGLE_CLOUD_CREDENTIALS_JSON: {e}")
+                    return None
+            
+            # Initialize client
             client = texttospeech.TextToSpeechClient()
             
             # Test the client by creating a simple voice config
