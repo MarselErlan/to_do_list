@@ -8,7 +8,10 @@ import os
 import base64
 import asyncio
 import tempfile
-from unittest.mock import patch
+import time
+import json
+from unittest.mock import patch, Mock, AsyncMock
+from fastapi import WebSocketDisconnect
 from app.voice_assistant import VoiceAssistant, VoiceAssistantService
 from app.config import settings
 
@@ -351,18 +354,17 @@ class TestVoiceAssistantServiceReliability:
         
         import json
         credentials_json = json.dumps(test_credentials)
-        
-        with patch('app.voice_assistant.settings') as mock_settings:
-            mock_settings.GOOGLE_CLOUD_CREDENTIALS_JSON = credentials_json
-            mock_settings.GOOGLE_APPLICATION_CREDENTIALS = None
-            
+    
+        with patch('os.getenv') as mock_getenv:
+            mock_getenv.side_effect = lambda key: credentials_json if key == 'GOOGLE_CLOUD_CREDENTIALS_JSON' else None
+
             # Should attempt to create temporary file
             with patch('tempfile.NamedTemporaryFile') as mock_temp:
                 mock_temp.return_value.__enter__.return_value.name = '/tmp/test_creds.json'
-                
+    
                 with patch('app.voice_assistant.speech.SpeechClient') as mock_speech:
                     service = VoiceAssistantService()
-                    
+    
                     # Should have attempted to create speech client
                     mock_speech.assert_called_once()
 

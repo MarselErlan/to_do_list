@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None  # Path to service account JSON
     GOOGLE_CLOUD_PROJECT: Optional[str] = None  # Your GCP project ID
     GOOGLE_CLOUD_CREDENTIALS_JSON: Optional[str] = None  # JSON content as string (for Railway)
+    SPEECH_LANGUAGE: str = "en-US"  # Default language for speech recognition
+    SPEECH_ENCODING: str = "LINEAR16"  # Default encoding
+    SPEECH_SAMPLE_RATE: int = 16000  # Default sample rate
 
     class Config:
         env_file = ".env"

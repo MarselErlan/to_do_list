@@ -141,7 +141,7 @@ class VoiceAssistantService:
         return speech.RecognitionConfig(
             encoding=encoding or speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=sample_rate or 16000,
-            language_code="en-US",
+            language_code=settings.SPEECH_LANGUAGE,
             enable_automatic_punctuation=True,
             enable_word_time_offsets=True,
             model="latest_long"
@@ -472,116 +472,102 @@ class VoiceAssistant:
         await self.process_audio_stream(websocket, user_id)
     
     async def process_audio_stream(self, websocket: WebSocket, user_id: int):
-        """Process continuous audio stream from WebSocket."""
+        """Process audio stream from WebSocket."""
+        session_name = "Default"
+        team_names = []
+        full_transcript = ""
+        is_continuous_mode = False
+
         try:
-            # Get user context from database
-            db = next(get_db())
-            try:
-                # Get user's sessions/teams for context
-                user_sessions = db.query(models.Session).join(models.SessionMember).filter(
-                    models.SessionMember.user_id == user_id
-                ).all()
-                team_names = [session.name for session in user_sessions if session.name]
+            while True:
+                message = await websocket.receive_text()
                 
-                # Default session context
-                current_session_name = "Personal"
-                
-                while True:
-                    # Receive audio data from client
-                    data = await websocket.receive_text()
-                    message = json.loads(data)
-                    
-                    # Handle session context updates
-                    if "session_name" in message:
-                        current_session_name = message["session_name"]
-                        await websocket.send_json({"session_updated": current_session_name})
-                        continue
-                    
-                    # Handle recording control messages
-                    if "action" in message:
-                        if message["action"] == "start_recording":
-                            # Clear buffer when starting new recording
+                try:
+                    data = json.loads(message)
+
+                    # Handle actions like interruption or session updates
+                    if "action" in data:
+                        if data["action"] == "interrupt":
+                            print("Received interrupt action")
                             self.service.clear_audio_buffer()
-                            await websocket.send_json({"status": "recording_started"})
-                            continue
-                        elif message["action"] == "stop_recording":
-                            # Force process accumulated audio when stopping
-                            result = self.service.force_process_audio()
-                            if "error" in result:
-                                await websocket.send_json({
-                                    "error": result["error"],
-                                    "response_text": result["error"]
-                                })
-                            else:
-                                transcript = result.get("transcript", "")
-                                if transcript:
-                                    # Process with LangChain
-                                    await self._process_transcript(websocket, transcript, user_id, current_session_name, team_names)
-                                else:
-                                    await websocket.send_json({
-                                        "error": "No speech detected",
-                                        "response_text": "I didn't hear any speech. Please try again."
-                                    })
-                            continue
-                        elif message["action"] == "interrupt":
-                            # Handle user interruption during assistant response
-                            await websocket.send_json({
-                                "status": "interrupted",
-                                "message": "Assistant interrupted, listening to you..."
-                            })
-                            continue
-                    
-                    if "audio" in message:
-                        audio_data = base64.b64decode(message["audio"])
-                        continuous_mode = message.get("continuous_mode", False)
+                            full_transcript = ""  # Reset transcript on interrupt
+                            await websocket.send_json({"status": "interrupted", "message": "Assistant interrupted."})
+                        continue
+
+                    if "session_name" in data:
+                        session_name = data["session_name"]
+                        await websocket.send_json({"status": "session_updated", "session_name": session_name})
+                        continue
+
+                    # Get audio data and continuous mode flag
+                    audio_data_b64 = data.get("audio")
+                    is_continuous_mode = data.get("continuous_mode", False)
+
+                    if not audio_data_b64:
+                        await websocket.send_json({"error": "No audio data provided"})
+                        continue
                         
-                        # Handle continuous mode vs traditional buffering
-                        if continuous_mode:
-                            # Process immediately for continuous voice chat
-                            result = self.service.process_audio_immediate(audio_data)
-                        else:
-                            # Use traditional buffering system
-                            result = self.service.process_audio_chunk(audio_data)
+                    audio_data = base64.b64decode(audio_data_b64)
+
+                    if is_continuous_mode:
+                        # Process audio immediately in continuous mode
+                        result = self.service.process_audio_immediate(audio_data)
                         
-                        if "error" in result:
-                            # Send detailed error message to frontend
-                            error_msg = result["error"]
-                            if "credentials" in error_msg.lower() or "timeout" in error_msg.lower():
-                                response_text = "Voice processing is not available. Please check that Google Cloud credentials are configured in the backend."
-                            else:
-                                response_text = f"Voice processing error: {error_msg}"
+                        if "transcript" in result and result["transcript"]:
+                            full_transcript += " " + result["transcript"]
+                            await self._process_transcript(
+                                websocket,
+                                full_transcript.strip(),
+                                user_id,
+                                session_name,
+                                team_names,
+                                continuous_mode=True
+                            )
+                        elif "error" in result:
+                            await websocket.send_json({"error": result["error"]})
+
+                    else:
+                        # Buffer audio in regular mode
+                        self.service.add_audio_chunk(audio_data)
+                        if self.service.should_process_audio():
+                            transcript_data = self.service.process_accumulated_audio()
                             
-                            await websocket.send_json({
-                                "error": response_text,
-                                "response_text": response_text,
-                                "transcript": "Voice processing failed"
-                            })
-                            continue
-                        
-                        # Handle interim results (still collecting audio)
-                        if result.get("interim"):
-                            await websocket.send_json({
-                                "status": "collecting",
-                                "message": result.get("message", "Collecting audio...")
-                            })
-                            continue
-                        
-                        # Handle successful transcription
-                        transcript = result.get("transcript", "")
-                        if transcript:
-                            await self._process_transcript(websocket, transcript, user_id, current_session_name, team_names, continuous_mode)
-                            
-            finally:
-                db.close()
-                        
+                            if "transcript" in transcript_data and transcript_data["transcript"]:
+                                full_transcript = transcript_data["transcript"]
+                                await self._process_transcript(
+                                    websocket,
+                                    full_transcript,
+                                    user_id,
+                                    session_name,
+                                    team_names,
+                                    continuous_mode=False
+                                )
+                                self.service.clear_audio_buffer()
+                            elif "error" in transcript_data:
+                                await websocket.send_json({"error": transcript_data["error"]})
+                                self.service.clear_audio_buffer()
+
+                except json.JSONDecodeError:
+                    await websocket.send_json({"error": "Invalid JSON format"})
+                    continue
+        
         except WebSocketDisconnect:
-            pass
+            print("WebSocket disconnected.")
+            if full_transcript and not is_continuous_mode:
+                # Process any remaining transcript in non-continuous mode
+                await self._process_transcript(websocket, full_transcript, user_id, session_name, team_names, False)
+        
         except Exception as e:
+            # Catch any other exceptions and send an error message
+            error_message = f"An unexpected error occurred: {str(e)}"
+            print(error_message)
             try:
-                await websocket.send_json({"error": str(e)})
-            except:
-                pass  # Connection might be closed already
+                await websocket.send_json({"error": error_message})
+            except Exception as send_error:
+                print(f"Failed to send error message to client: {send_error}")
+
         finally:
+            print("Closing WebSocket connection.")
             # Only close if not already closed
             if websocket.client_state.name != "DISCONNECTED":
                 await websocket.close()
@@ -653,46 +639,37 @@ class VoiceAssistant:
             })
     
     def process_voice_command(self, audio_data: bytes, user_id: int, session_name: str, team_names: list = None) -> Dict[str, Any]:
-        """Process a single voice command (for testing/non-WebSocket use)."""
-        if team_names is None:
-            team_names = []
-        
-        # Process audio
-        result = self.service.process_audio_chunk(audio_data)
-        
-        if "error" in result:
-            return {"error": result["error"]}
-        
-        transcript = result.get("transcript", "")
-        if not transcript:
-            return {"error": "No speech detected"}
-        
-        # Process with LangChain
-        llm_result = self.service.process_with_langchain(transcript, user_id, session_name, team_names)
-        
-        # Generate response
-        if llm_result.get("is_complete"):
-            response_text = f"Task '{llm_result.get('task_title', 'created')}' has been created successfully!"
-            audio_response = self.service.text_to_speech(response_text)
+        """Process a single voice command (non-streaming)."""
+        try:
+            # Step 1: Speech-to-Text
+            result = self.service.process_audio_chunk(audio_data)
+
+            if "error" in result:
+                return result
+
+            transcript = result.get("transcript", "")
+            if not transcript:
+                return {"error": "No transcript found", "task_created": False}
             
-            return {
-                "task_created": True,
-                "task_title": llm_result.get("task_title"),
-                "transcript": transcript,
-                "audio_response": base64.b64encode(audio_response).decode() if audio_response else "",
-                "llm_result": llm_result
-            }
-        else:
-            clarification_questions = llm_result.get("clarification_questions", [])
-            response_text = clarification_questions[0] if clarification_questions else "I need more information to create the task."
+            # Step 2: Process with LangChain
+            if team_names is None:
+                team_names = []
             
-            return {
-                "task_created": False,
-                "transcript": transcript,
-                "clarification_needed": True,
-                "response_text": response_text,
-                "llm_result": llm_result
-            }
+            llm_result = self.service.process_with_langchain(transcript, user_id, session_name, team_names)
+
+            # Combine results
+            result.update(llm_result)
+
+            # Step 3: Text-to-Speech
+            response_text = result.get("response", "")
+            if response_text:
+                audio_response = self.service.text_to_speech(response_text)
+                result["audio_response"] = base64.b64encode(audio_response).decode("utf-8")
+            
+            return result
+
+        except Exception as e:
+            return {"error": str(e), "task_created": False}
 
 
 # Helper function for tests
