@@ -149,6 +149,7 @@ class VoiceAssistantService:
 
     def try_speech_recognition(self, audio_data: bytes, use_cache: bool = True) -> Dict[str, Any]:
         """Try speech recognition with different audio encodings and sample rates."""
+        print(f"🎤 Starting speech recognition: {len(audio_data)} bytes, use_cache={use_cache}")
         
         # If we have cached encoding, try it first
         if use_cache and self.cached_encoding and self.cached_sample_rate:
@@ -375,12 +376,16 @@ class VoiceAssistantService:
     
     def process_audio_immediate(self, audio_data: bytes) -> Dict[str, Any]:
         """Process audio immediately without buffering for continuous mode."""
+        print(f"🎯 Processing audio immediately: {len(audio_data)} bytes")
+        
         if self.speech_client is None:
+            print("❌ Speech client not initialized")
             return {"error": "Speech client not initialized - Google Cloud credentials may be missing"}
         
         try:
             # Validate audio data
             if len(audio_data) < 100:
+                print(f"❌ Audio data too short: {len(audio_data)} bytes")
                 return {"error": "Audio data too short"}
             
             # Process immediately with shorter timeout for real-time response
@@ -503,11 +508,15 @@ class VoiceAssistant:
                     audio_data_b64 = data.get("audio")
                     is_continuous_mode = data.get("continuous_mode", False)
 
+                    print(f"🎵 Received audio message: audio_length={len(audio_data_b64) if audio_data_b64 else 0}, continuous_mode={is_continuous_mode}")
+
                     if not audio_data_b64:
+                        print("❌ No audio data provided in message")
                         await websocket.send_json({"error": "No audio data provided"})
                         continue
                         
                     audio_data = base64.b64decode(audio_data_b64)
+                    print(f"🔊 Decoded audio data: {len(audio_data)} bytes")
 
                     if is_continuous_mode:
                         # Process audio immediately in continuous mode
