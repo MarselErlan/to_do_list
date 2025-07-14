@@ -489,6 +489,7 @@ class VoiceAssistant:
                 
                 try:
                     data = json.loads(message)
+                    print(f"📨 Received WebSocket message: {data}")
 
                     # Handle actions like interruption or session updates
                     if "action" in data:
@@ -502,6 +503,22 @@ class VoiceAssistant:
                     if "session_name" in data:
                         session_name = data["session_name"]
                         await websocket.send_json({"status": "session_updated", "session_name": session_name})
+                        continue
+
+                    # Handle text messages (for testing)
+                    if "test_message" in data:
+                        test_text = data["test_message"]
+                        print(f"📝 Received test text message: {test_text}")
+                        
+                        # Process the text message directly with LLM
+                        await self._process_transcript(
+                            websocket,
+                            test_text,
+                            session_name,
+                            team_names,
+                            user_id,
+                            is_continuous_mode=False
+                        )
                         continue
 
                     # Get audio data and continuous mode flag
